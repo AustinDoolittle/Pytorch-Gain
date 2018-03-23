@@ -67,7 +67,28 @@ def infer_handler(args):
     raise NotImplementedError('Coming soon...')
 
 def model_info_handler(args):
-    raise NotImplementedError('Coming soon...')
+    if args.weights_file:
+        # load the meta data too
+        model = gain.AttentionGAIN.load(args.weights_file, gradient_layer_name=args.gradient_layer_name)
+        print(model)
+    else:
+        model = gain.get_model(args.model_type, 1)
+
+        # print every layer in the model
+        print('%s Model Layers:'%args.model_type)
+        gradient_layer_found = False
+        for idx, m in model.named_modules():
+            if not '.' in str(idx):
+                continue
+            print('%s: %s'%(str(idx), str(m)))
+            if idx == args.gradient_layer_name:
+                gradient_layer_found = True
+
+        print('\n')
+        if gradient_layer_found:
+            print('Gradient layer %s exists in this model'%args.gradient_layer_name)
+        else:
+            print('Gradient layer %s does not exist in this model'%args.gradient_layer_name)
 
 def parse_args(argv):
     gpu_parent = argparse.ArgumentParser(add_help=False)
@@ -83,15 +104,10 @@ def parse_args(argv):
     model_parent = argparse.ArgumentParser(add_help=False)
     model_parent.add_argument('--gradient-layer-name', type=str, default='features.34',
         help='The name of the layer to construct the heatmap from')
-    model_parent.add_argument('--model_type', type=str, default='vgg19', choices=gain.available_models,
+    model_parent.add_argument('--model-type', type=str, default='vgg19', choices=gain.available_models,
         help='The name of the underlying model to train')
     model_parent.add_argument('--weights-file', type=str,
         help='The full path to the .tar file containing model weights and metadata')
-    # TODO dynamically retrieve expected input size???
-    model_parent.add_argument('--input-dims', type=int, nargs=2,
-        help='The dimensions to resize inputs to. Keep in mind that some models have a default input size. This is not used if the model is loaded from saved weights.')
-    model_parent.add_argument('--input-channels', type=int,
-        help='The number of channels the network should expect as input. This is not used if the model is loaded from saved weights.')
 
     parser = argparse.ArgumentParser(description='Implementation of GAIN using pytorch')
 
@@ -125,6 +141,11 @@ def parse_args(argv):
         help='The batch size to use when training')
     train_parser.add_argument('--output-dir', type=str, default='./out',
         help='The output directory for training runs. A subdirectory with the modelname and timestamp is created')
+    # TODO dynamically retrieve expected input size???
+    train_parser.add_argument('--input-dims', type=int, nargs=2,
+        help='The dimensions to resize inputs to. Keep in mind that some models have a default input size. This is not used if the model is loaded from saved weights.')
+    train_parser.add_argument('--input-channels', type=int,
+        help='The number of channels the network should expect as input. This is not used if the model is loaded from saved weights.')
 
     infer_parser = subparser.add_parser('infer', parents=[gpu_parent, model_parent],
         help='Run inference on a trained model')

@@ -12,6 +12,8 @@ class RawDataset:
         self.output_channels = output_channels
         self.include_exts = include_exts
         self.output_dims = output_dims
+
+        # TODO implement transformers
         self.transformer = transformer
 
         self.datasets = self._load_datasets()
