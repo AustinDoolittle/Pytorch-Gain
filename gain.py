@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from datetime import datetime
 import numpy as np
 import os
@@ -9,10 +10,8 @@ import re
 model_file_reg = re.compile(r'(?P<model_type>[a-zA-Z0-9-_]+)__(?P<epoch>\d+)__(?P<tag>[a-zA-Z0-9-_]+)\.pt')
 available_models = [i for i in dir(torchvision.models) if not i.startswith('__')]
 
-
 def scalar(tensor):
     return tensor.data.cpu().numpy()[0]
-
 
 def load_model(model_type, output_length):
     model = getattr(torchvision.models, model_type)
@@ -147,8 +146,8 @@ class AttentionGAIN:
         model_name = self._create_saved_model_name(self.model_type, epoch, tag)
         model_name = os.path.join(self.saved_model_dir, model_name)
         try:
-
             torch.save(self.model.state_dict(), model_name)
+            print('MODEL saved to %s'%model_name)
         except OSError as e:
             print('WARNING there was an error while saving model: %s'%str(e))
             return
@@ -156,10 +155,9 @@ class AttentionGAIN:
         # delete our extra model
         if delete_model_path:
             try:
-                os.delete
+                os.remove(delete_model_path)
             except OSError as e:
                 print('WARNING there was an error while trying to remove file %s: %s'% (delete_model_path, e))
-
 
     def _maybe_save_heatmap(self, image, heatmap, epoch):
         if self.heatmap_dir is None:
@@ -191,7 +189,7 @@ class AttentionGAIN:
 
         out_file = os.path.join(self.heatmap_dir, 'epoch_%i.png'%epoch)
         cv2.imwrite(os.path.join(self.heatmap_dir, 'epoch_%i.png'%epoch), heatmap_image)
-        print('TEST Heatmap written to %s'%out_file)
+        print('HEATMAP saved to %s'%out_file)
 
     def forward(self, data, label):
         data, label_one_hot = self._convert_data_and_label(data, label)
@@ -218,21 +216,20 @@ class AttentionGAIN:
                 loss_am_sum += scalar(loss_am)
                 acc_cl_sum += scalar(acc_cl)
 
-                # Backprop that thang up
-                loss_cl_tag = 'Loss_CL'
-                loss_total_tag = 'Loss_Total'
+                # Backprop selectively based on pretraining/training
                 if pretrain_finished:
-                    loss_total_tag = '<' + loss_total_tag + '>'
+                    print_prefix = 'TRAIN'
                     total_loss.backward()
                 else:
-                    loss_cl_tag = '<' + loss_cl_tag + '>'
+                    print_prefix = 'PRETRAIN'
                     loss_cl.backward()
 
                 self.opt.step()
             train_size = len(self.rds.datasets['train'])
             last_acc = acc_cl_sum / train_size
-            print('[Epoch %i] %s: %f, Loss_AM: %f, %s: %f, Accuracy_CL: %f%%'%
-                    ((i+1), loss_cl_tag, loss_cl_sum / train_size, loss_am_sum / train_size, loss_total_tag, total_loss_sum / train_size, last_acc * 100.0))
+            print('%s Epoch %i, Loss_CL: %f, Loss_AM: %f, Loss Total: %f, Accuracy_CL: %f%%'%
+                    (print_prefix, (i+1), loss_cl_sum / train_size, loss_am_sum / train_size,
+                     total_loss_sum / train_size, last_acc * 100.0))
 
 
             if (i + 1) % test_every_n_epochs == 0:
@@ -260,11 +257,15 @@ class AttentionGAIN:
 
                 self._maybe_save_heatmap(sample['image'][0], A_c[0], i+1)
 
-    def _forward(self, data, label):
-        # self._clear_gradients()
-        output_cl = self.model(data)
+            # print an empty line for a cleaner output
+            print('')
 
-        output_cl.backward(gradient=label)
+    def _forward(self, data, label):
+        output_cl = self.model(data)
+        output_cl_softmax = F.softmax(output_cl, dim=1)
+
+        output_cl.backward(gradient=label * output_cl_softmax)
+
         self.model.zero_grad()
 
         # Eq 1
@@ -273,14 +274,14 @@ class AttentionGAIN:
         # Eq 2
         A_c = self._last_activation * w_c
         A_c = A_c.sum(dim=(1), keepdim=True)
-        A_c = torch.nn.functional.relu(A_c)
+        A_c = F.relu(A_c)
 
         # Eq 4
         T_A_c = torch.sigmoid(self.omega * (A_c - self.sigma))
 
         # resize our maps to be the size of the input image
-        A_c_resized = torch.nn.functional.upsample(A_c, size=data.size()[2:], mode='bilinear')
-        T_A_c_resized = torch.nn.functional.upsample(T_A_c, size=data.size()[2:], mode='bilinear')
+        A_c_resized = F.upsample(A_c, size=data.size()[2:], mode='bilinear')
+        T_A_c_resized = F.upsample(T_A_c, size=data.size()[2:], mode='bilinear')
 
         # Eq 3
         I_star = data - (T_A_c_resized * data)
@@ -288,7 +289,7 @@ class AttentionGAIN:
         output_am = self.model(I_star)
 
         # Eq 5
-        loss_am = torch.nn.functional.softmax(output_am, dim=1) * label
+        loss_am = F.softmax(output_am, dim=1) * label
 
         tensor_module = torch
         if self.gpu:
