@@ -4,7 +4,6 @@ from datetime import datetime
 import os
 import argparse
 import sys
-
 import gain
 import data
 
@@ -25,7 +24,7 @@ def train_handler(args):
     model_dir = os.path.join(output_dir, 'models')
 
     print('Creating Dataset...')
-    rds = data.RawDataset(args.dataset_path, output_dims=tuple(args.input_dims), output_channels=args.input_channels)
+    rds = data.RawDataset(args.dataset_path, output_dims=tuple(args.input_dims), output_channels=args.input_channels, num_workers=args.num_workers)
 
     gain_args = {
         'gradient_layer_name': args.gradient_layer_name,
@@ -100,7 +99,7 @@ def parse_args(argv):
     data_parent = argparse.ArgumentParser(add_help=False)
     data_parent.add_argument('--dataset-path', type=str, required=True,
         help='The path to the dataset, formatted with data in different directories based on label')
-    data_parent.add_argument('--worker-count', type=int, default=1,
+    data_parent.add_argument('--num-workers', type=int, default=1,
         help='The number of worker processes to use for loading/transforming data. Note that this spawns this amount of workers for both the test and train dataset.')
 
     model_parent = argparse.ArgumentParser(add_help=False)

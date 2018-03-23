@@ -5,13 +5,14 @@ import torch
 import random
 
 class RawDataset:
-    def __init__(self, root_dir, ds_split=0.8, include_exts=['.jpg', '.png', '.jpeg'], transformer=None, output_dims=(224, 224), output_channels=3):
+    def __init__(self, root_dir, ds_split=0.8, include_exts=['.jpg', '.png', '.jpeg'], transformer=None, output_dims=(224, 224), output_channels=3, num_workers=1):
         self.name = os.path.split(root_dir)[-1]
         self._ds_split = ds_split
         self.root_dir = root_dir
         self.output_channels = output_channels
         self.include_exts = include_exts
         self.output_dims = output_dims
+        self.num_workers = num_workers
 
         # TODO implement transformers
         self.transformer = transformer
@@ -54,7 +55,7 @@ class RawDataset:
                 ds_args['transformer'] = self.transformer
 
             ds = ImageDataset(filesets['train'], self.labels, **ds_args)
-            ret_dict[k] = torch.utils.data.DataLoader(ds, shuffle=True, num_workers=2)
+            ret_dict[k] = torch.utils.data.DataLoader(ds, shuffle=True, num_workers=self.num_workers)
 
         return ret_dict
 

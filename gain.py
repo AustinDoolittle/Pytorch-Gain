@@ -71,6 +71,7 @@ class AttentionGAIN:
         self.labels = labels
         self.input_channels = input_channels
         self.input_dims = input_dims
+        self.epoch = epoch
 
     @staticmethod
     def load(model_path, **kwargs):
@@ -169,7 +170,7 @@ class AttentionGAIN:
                 print('WARNING there was an error while creating directory %s: %s'%(str(self.saved_model_dir), str(e)))
                 return
 
-        min_epoch = self.epoch
+        max_epoch = self.epoch
         delete_model_path = None
         num_models = 0
         # store the model for later deletion
@@ -188,16 +189,16 @@ class AttentionGAIN:
             temp_epoch = int(temp_epoch)
             num_models += 1
             full_model_path = os.path.join(self.saved_model_dir, p)
-            if temp_epoch < min_epoch:
+            if temp_epoch < max_epoch:
                 delete_model_path = os.path.join(self.saved_model_dir, p)
-                min_epoch = temp_epoch
+                max_epoch = temp_epoch
 
         # if we are less that the max saved model count, then don't worry about it
         if num_models < save_count:
             delete_model_path = None
 
         # save the current model
-        saved_model_filename = os.path.join(self.saved_model_dir, 'saved_model_%i_%s.model'%(epoch, tag))
+        saved_model_filename = os.path.join(self.saved_model_dir, 'saved_model_%i_%s.model'%(self.epoch, tag))
 
         save_dict = {
             'state_dict': self.model.state_dict(),
