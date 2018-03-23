@@ -331,6 +331,7 @@ class AttentionGAIN:
 
                 if avg_acc > max_acc:
                     self._maybe_save_model(i+1)
+                    max_acc = avg_acc
 
                 self._maybe_save_heatmap(sample['image'][0], A_c[0], i+1)
 
