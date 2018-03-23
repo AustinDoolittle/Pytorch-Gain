@@ -15,19 +15,32 @@ def set_available_gpus(gpus):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset-path', type=str, required=True)
-    parser.add_argument('--learning-rate', type=float, default=0.0005)
-    parser.add_argument('--gpus', type=str, nargs='+')
-    parser.add_argument('--gradient-layer-name', type=str, default='features.34')
-    parser.add_argument('--num-epochs', type=int, default=50)
-    parser.add_argument('--output-dir', type=str, default='./out')
-    parser.add_argument('--test-every-n', type=int, default=5)
-    parser.add_argument('--alpha', type=float, default=1)
-    parser.add_argument('--sigma', type=float, default=0.5)
-    parser.add_argument('--omega', type=float, default=10)
-    parser.add_argument('--model', type=str, default='vgg19', choices=gain.available_models)
-    parser.add_argument('--pretrain-epochs', type=int, default=100)
-    parser.add_argument('--pretrain-threshold', type=float, default=0.95)
+    parser.add_argument('--dataset-path', type=str, required=True,
+        help='The path to the dataset, formatted with data in different directories based on label')
+    parser.add_argument('--learning-rate', type=float, default=0.0005,
+        help='Learning rate to plug into the optimizer')
+    parser.add_argument('--gpus', type=str, nargs='+',
+        help='GPUs to run training on. Exclude for cpu training')
+    parser.add_argument('--gradient-layer-name', type=str, default='features.34',
+        help='The name of the layer to construct the heatmap from')
+    parser.add_argument('--num-epochs', type=int, default=50,
+        help='The number of epochs to run training for')
+    parser.add_argument('--output-dir', type=str, default='./out',
+        help='The output directory for training runs. A subdirectory with the modelname and timestamp is created')
+    parser.add_argument('--test-every-n', type=int, default=5,
+        help='Run a full iteration over the test epoch every n epochs')
+    parser.add_argument('--alpha', type=float, default=1,
+        help='The coefficied in Eq 6 that weights the attention mining loss in relation to the classification loss')
+    parser.add_argument('--sigma', type=float, default=0.5,
+        help='The threshold value used in Eq 6')
+    parser.add_argument('--omega', type=float, default=10,
+        help='The scaling value used in Eq 6')
+    parser.add_argument('--model', type=str, default='vgg19', choices=gain.available_models,
+        help='The name of the underlying model to train')
+    parser.add_argument('--pretrain-epochs', type=int, default=100,
+        help='The number of epochs to train the network before factoring in the attention map')
+    parser.add_argument('--pretrain-threshold', type=float, default=0.95,
+        help='The accuracy value to pretrain to before factoring in the attention map loss')
 
     return parser.parse_args(argv)
 
