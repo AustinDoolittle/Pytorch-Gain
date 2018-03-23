@@ -5,11 +5,13 @@ import torch
 import random
 
 class RawDataset:
-    def __init__(self, root_dir, ds_split=0.8, include_exts=['.jpg', '.png', '.jpeg'], transformer=None, out_dims=(224, 224)):
+    def __init__(self, root_dir, ds_split=0.8, include_exts=['.jpg', '.png', '.jpeg'], transformer=None, output_dims=(224, 224), output_channels=3):
+        self.name = os.path.split(root_dir)[-1]
         self._ds_split = ds_split
         self.root_dir = root_dir
+        self.output_channels = output_channels
         self.include_exts = include_exts
-        self.out_dims = out_dims
+        self.output_dims = output_dims
         self.transformer = transformer
 
         self.datasets = self._load_datasets()
@@ -43,7 +45,8 @@ class RawDataset:
         # create image datasets for train and test
         for k in filesets:
             ds_args = {
-                'out_dims': self.out_dims,
+                'output_dims': self.output_dims,
+                'output_channels': self.output_channels
             }
             if k == 'train':
                 ds_args['transformer'] = self.transformer
@@ -55,8 +58,9 @@ class RawDataset:
 
 
 class ImageDataset(torch.utils.data.Dataset):
-    def __init__(self, fileset, labels, transformer=None, out_dims=(256,256)):
-        self.out_dims = out_dims
+    def __init__(self, fileset, labels, transformer=None, output_dims=(256,256), output_channels=3):
+        self.output_dims = output_dims
+        self.output_channels=output_channels
         self.transformer = transformer
         self._fileset = fileset
         self.labels = labels
@@ -67,7 +71,15 @@ class ImageDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         # decode and resize
         decoded_img = cv2.imread(self._fileset[idx][0])
-        decoded_img = cv2.resize(decoded_img, self.out_dims)
+        decoded_img = cv2.resize(decoded_img, self.output_dims)
+        if len(decoded_img) == 2:
+            decoded_img = np.expand_dims(decoded_img, axis=0)
+
+        # convert to expected channel count
+        if decoded_img.shape[2] == 1 and self.output_channels == 3:
+            decoded_img = cv2.cvtColor(decoded_img, cv2.COLOR_GRAY2RGB)
+        elif decoded_img.shape[2] == 3 and self.output_channels == 1:
+            decoded_img = cv2.cvtColor(decoded_img, cv2.COLOR_RGB2GRAY)
 
         # pytorch is [C, H, W]
         decoded_img = decoded_img.transpose((2, 0, 1))
@@ -87,3 +99,4 @@ class ImageDataset(torch.utils.data.Dataset):
             ret_dict = self.transformer(ret_dict)
 
         return ret_dict
+

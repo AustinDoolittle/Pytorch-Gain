@@ -6,55 +6,80 @@ import os
 import torchvision
 import cv2
 import re
+import io
+import json
 
-model_file_reg = re.compile(r'(?P<model_type>[a-zA-Z0-9-_]+)__(?P<epoch>\d+)__(?P<tag>[a-zA-Z0-9-_]+)\.pt')
+model_file_reg = re.compile(r'saved_model_(?P<epoch>\d+)_(?P<tag>[a-zA-Z0-9-_]+)\.model')
 available_models = [i for i in dir(torchvision.models) if not i.startswith('__')]
 
 def scalar(tensor):
     return tensor.data.cpu().numpy()[0]
 
-def load_model(model_type, output_length):
+def get_model(model_type, output_length):
     model = getattr(torchvision.models, model_type)
     return model(pretrained=False, num_classes=output_length)
 
-
 class AttentionGAIN:
-    def __init__(self, rds, model_type, gradient_layer_name, learning_rate=0.005, alpha=1, omega=10, sigma=0.5,
-                gpu=False, heatmap_dir=None, saved_model_dir=None, load_weights=False):
+    def __init__(self, model_type=None, gradient_layer_name=None, weights=None, heatmap_dir=None,
+                 saved_model_dir=None, epoch=0, gpu=False, alpha=1, omega=10, sigma=0.5, labels=None,
+                 input_channels=None, input_dims=None):
+        # validation
+        if not model_type:
+            raise ValueError('Missing required argument model_type')
+        if not gradient_layer_name:
+            raise ValueError('Missing required argument gradient_layer_name')
+        if not input_channels:
+            raise ValueError('Missing required argument input_channels')
+        if not input_dims:
+            raise ValueError('Missing required argument input_dims')
+
+        # set gpu options
         self.gpu = gpu
 
-        # TODO open this up to other models
+        # define model
         self.model_type = model_type
-
-        self.model = load_model(self.model_type, len(rds.labels))
+        self.model = get_model(self.model_type, len(labels))
+        if weights:
+            self.model.load_state_dict(weights)
+            self.epoch = epoch
+        elif epoch > 0:
+            raise ValueError('epoch_offset > 0, but no weights were supplied')
 
         if self.gpu:
             self.model = self.model.cuda()
 
+        # wire up our hooks for heatmap creation
         self._register_hooks(gradient_layer_name)
 
-        self.rds = rds
+        # create loss function
+        # TODO make this configurable
         self.loss_cl = torch.nn.BCEWithLogitsLoss()
-        self.opt = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
 
+        # output directory setup
         self.heatmap_dir = os.path.abspath(heatmap_dir)
         self.saved_model_dir = os.path.abspath(saved_model_dir)
+
+        # misc. parameters
         self.omega = omega
         self.sigma = sigma
         self.alpha = alpha
+        self.labels = labels
+        self.input_channels = input_channels
+        self.input_dims = input_dims
 
     @staticmethod
-    def _create_saved_model_name(model_type, epoch, tag):
-        return '%s__%i__%s.pt'%(model_type, epoch, tag)
+    def load(model_path, **kwargs):
+        model_dict= torch.load(model_path)
+        kwargs.update(model_dict['meta'])
+        return AttentionGAIN(weights=model_dict['state_dict'], **kwargs)
 
     @staticmethod
-    def _parse_saved_model_name(filename):
-        result = model_file_reg.match(filename)
+    def _parse_saved_model_name(model_name):
+        result = model_file_reg.match(model_name)
         if not result:
-            raise ValueError('Could not parse model information from filename %s'%filename)
+            raise ValueError('Could not parse tag from model name %s'%model_name)
 
-        return result.group('model_type'), int(result.group('epoch')), result.group('tag')
-
+        return result.group('epoch'), result.group('tag')
 
     def _register_hooks(self, layer_name):
         # this wires up a hook that stores both the activation and gradient of the conv layer we are interested in
@@ -80,7 +105,7 @@ class AttentionGAIN:
     def _to_one_hot(self, in_tensor):
         # utility function for turning list of integers to one_hot encoded arrays
         in_tensor = in_tensor.view(1,-1)
-        one_hot = torch.zeros(in_tensor.size()[0], len(self.rds.labels))
+        one_hot = torch.zeros(in_tensor.size()[0], len(self.labels))
 
         if self.gpu:
             one_hot = one_hot.cuda()
@@ -107,7 +132,6 @@ class AttentionGAIN:
         if self.saved_model_dir is None:
             return
 
-
         if not os.path.exists(self.saved_model_dir):
             try:
                 os.makedirs(self.saved_model_dir)
@@ -120,20 +144,20 @@ class AttentionGAIN:
         num_models = 0
         # store the model for later deletion
         for p in os.listdir(self.saved_model_dir):
-            if not os.path.splitext(p)[-1] == '.pt':
-                # Don't try with this one
+            if not os.path.splitext(p)[-1] == '.model':
                 continue
 
             try:
-                _, temp_epoch, temp_tag = self._parse_saved_model_name(p)
+                temp_epoch, temp_tag = self._parse_saved_model_name(p)
             except ValueError as e:
                 print('WARNING error while parsing saved model filename: %s'%str(e))
                 continue
-
             if temp_tag != tag:
                 continue
 
+            temp_epoch = int(temp_epoch)
             num_models += 1
+            full_model_path = os.path.join(self.saved_model_dir, p)
             if temp_epoch < min_epoch:
                 delete_model_path = os.path.join(self.saved_model_dir, p)
                 min_epoch = temp_epoch
@@ -143,11 +167,22 @@ class AttentionGAIN:
             delete_model_path = None
 
         # save the current model
-        model_name = self._create_saved_model_name(self.model_type, epoch, tag)
-        model_name = os.path.join(self.saved_model_dir, model_name)
+        saved_model_filename = os.path.join(self.saved_model_dir, 'saved_model_%i_%s.model'%(epoch, tag))
+
+        save_dict = {
+            'state_dict': self.model.state_dict(),
+            'meta': {
+                'input_dims': self.input_dims,
+                'input_channels': self.input_channels,
+                'model_type': self.model_type,
+                'labels': self.labels,
+                'epoch': epoch
+            }
+        }
+
         try:
-            torch.save(self.model.state_dict(), model_name)
-            print('MODEL saved to %s'%model_name)
+            torch.save(save_dict, saved_model_filename)
+            print('MODEL saved to %s'%saved_model_filename)
         except OSError as e:
             print('WARNING there was an error while saving model: %s'%str(e))
             return
@@ -196,11 +231,27 @@ class AttentionGAIN:
 
         return self._forward(data, label_one_hot)
 
-    def train(self, epochs, pretrain_epochs=10, pretrain_threshold=0.95, test_every_n_epochs=5):
+    def _check_dataset_compatability(self, rds):
+        if rds.output_dims != self.input_dims:
+            raise ValueError('Dataset outputs images with dimension %s, model expects %s'%
+                                (str(rds.output_dims), str(self.input_dims)))
+        elif rds.output_channels != self.input_channels:
+            raise ValueError('Dataset outputs images with channel_count %i, model expects %i'%
+                                (rds.output_channels, self.input_channels))
+        elif rds.labels != self.labels:
+            raise ValueError('Dataset has labels %s, model has labels %s'%
+                                (str(rds.labels), str(self.labels)))
+
+    def train(self, rds, epochs, pretrain_epochs=10, learning_rate=1e-5, pretrain_threshold=0.95, test_every_n_epochs=5):
+        # TODO dynamic optimizer selection
+        self._check_dataset_compatability(rds)
+
         last_acc = 0
         max_acc = 0
         pretrain_finished = False
-        for i in range(epochs):
+
+        opt = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
+        for i in range(self.epoch, epochs, 1):
             pretrain_finished = pretrain_finished or \
                                 i > pretrain_epochs or \
                                 last_acc >= pretrain_threshold
@@ -209,7 +260,7 @@ class AttentionGAIN:
             acc_cl_sum = 0
             total_loss_sum = 0
             # train
-            for sample in self.rds.datasets['train']:
+            for sample in rds.datasets['train']:
                 total_loss, loss_cl, loss_am, acc_cl, A_c = self.forward(sample['image'], sample['label/idx'])
                 total_loss_sum += scalar(total_loss)
                 loss_cl_sum += scalar(loss_cl)
@@ -224,8 +275,8 @@ class AttentionGAIN:
                     print_prefix = 'PRETRAIN'
                     loss_cl.backward()
 
-                self.opt.step()
-            train_size = len(self.rds.datasets['train'])
+                opt.step()
+            train_size = len(rds.datasets['train'])
             last_acc = acc_cl_sum / train_size
             print('%s Epoch %i, Loss_CL: %f, Loss_AM: %f, Loss Total: %f, Accuracy_CL: %f%%'%
                     (print_prefix, (i+1), loss_cl_sum / train_size, loss_am_sum / train_size,
@@ -238,7 +289,7 @@ class AttentionGAIN:
                 loss_am_sum = 0
                 acc_cl_sum = 0
                 total_loss_sum = 0
-                for sample in self.rds.datasets['test']:
+                for sample in rds.datasets['test']:
                     # test
                     total_loss, loss_cl, loss_am, acc_cl, A_c = self.forward(sample['image'], sample['label/idx'])
 
@@ -247,13 +298,13 @@ class AttentionGAIN:
                     loss_am_sum += scalar(loss_am)
                     acc_cl_sum += scalar(acc_cl)
 
-                test_size = len(self.rds.datasets['test'])
+                test_size = len(rds.datasets['test'])
                 avg_acc = acc_cl_sum / test_size
-                if avg_acc > max_acc:
-                    self._maybe_save_model(i+1)
-
                 print('TEST Loss_CL: %f, Loss_AM: %f, Loss_Total: %f, Accuracy_CL: %f%%'%
                     (loss_cl_sum / test_size, loss_am_sum / test_size, total_loss_sum / test_size, avg_acc * 100.0))
+
+                if avg_acc > max_acc:
+                    self._maybe_save_model(i+1)
 
                 self._maybe_save_heatmap(sample['image'][0], A_c[0], i+1)
 
