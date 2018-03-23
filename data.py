@@ -75,14 +75,13 @@ class ImageDataset(torch.utils.data.Dataset):
         # decode and resize
         decoded_img = cv2.imread(self._fileset[idx][0])
         decoded_img = cv2.resize(decoded_img, self.output_dims)
-        if len(decoded_img) == 2:
-            decoded_img = np.expand_dims(decoded_img, axis=0)
-
         # convert to expected channel count
         if decoded_img.shape[2] == 1 and self.output_channels == 3:
             decoded_img = cv2.cvtColor(decoded_img, cv2.COLOR_GRAY2RGB)
+
         elif decoded_img.shape[2] == 3 and self.output_channels == 1:
             decoded_img = cv2.cvtColor(decoded_img, cv2.COLOR_RGB2GRAY)
+            decoded_img = np.expand_dims(decoded_img, axis=2)
 
         # pytorch is [C, H, W]
         decoded_img = decoded_img.transpose((2, 0, 1))
