@@ -4,6 +4,24 @@ import os
 import torch
 import random
 
+def load_image(image_path, resize_dims, expected_channels):
+    # decode and resize
+    decoded_img = cv2.imread(self._fileset[idx][0])
+    decoded_img = cv2.resize(decoded_img, self.output_dims)
+    # convert to expected channel count
+    if decoded_img.shape[2] == 1 and self.output_channels == 3:
+        decoded_img = cv2.cvtColor(decoded_img, cv2.COLOR_GRAY2RGB)
+
+    elif decoded_img.shape[2] == 3 and self.output_channels == 1:
+        decoded_img = cv2.cvtColor(decoded_img, cv2.COLOR_RGB2GRAY)
+        decoded_img = np.expand_dims(decoded_img, axis=2)
+
+    # pytorch is [C, H, W]
+    decoded_img = decoded_img.transpose((2, 0, 1))
+    decoded_img = decoded_img.astype(np.float32)
+    decoded_img = decoded_img / 255.0
+
+
 class RawDataset:
     def __init__(self, root_dir, ds_split=0.8, include_exts=['.jpg', '.png', '.jpeg'], transformer=None, output_dims=(224, 224), output_channels=3, num_workers=1):
         self.name = os.path.split(root_dir)[-1]
@@ -25,6 +43,12 @@ class RawDataset:
         for p in os.listdir(self.root_dir):
             full_dir = os.path.join(self.root_dir, p)
             if not os.path.isdir(full_dir):
+                continue
+
+            p_split = p.rsplit('___', 1)
+            p = p_split[0]
+            p_tag = p_split[1]
+            if p_tag == 'ignore':
                 continue
 
             for f in os.listdir(full_dir):
@@ -72,22 +96,7 @@ class ImageDataset(torch.utils.data.Dataset):
         return len(self._fileset)
 
     def __getitem__(self, idx):
-        # decode and resize
-        decoded_img = cv2.imread(self._fileset[idx][0])
-        decoded_img = cv2.resize(decoded_img, self.output_dims)
-        # convert to expected channel count
-        if decoded_img.shape[2] == 1 and self.output_channels == 3:
-            decoded_img = cv2.cvtColor(decoded_img, cv2.COLOR_GRAY2RGB)
-
-        elif decoded_img.shape[2] == 3 and self.output_channels == 1:
-            decoded_img = cv2.cvtColor(decoded_img, cv2.COLOR_RGB2GRAY)
-            decoded_img = np.expand_dims(decoded_img, axis=2)
-
-        # pytorch is [C, H, W]
-        decoded_img = decoded_img.transpose((2, 0, 1))
-        decoded_img = decoded_img.astype(np.float32)
-        decoded_img = decoded_img / 255.0
-
+        decoded_img = read_image(self._fileset[idx][0], self.output_dims, self.output_channels)
         label_index = self.labels.index(self._fileset[idx][1])
 
         ret_dict = {
