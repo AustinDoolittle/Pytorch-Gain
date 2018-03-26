@@ -6,8 +6,10 @@ import argparse
 import sys
 import gain
 import data
+import transform
 import torch
 import cv2
+import time
 
 def set_available_gpus(gpus):
     if isinstance(gpus, list):
@@ -26,7 +28,12 @@ def train_handler(args):
     model_dir = os.path.join(output_dir, 'models')
 
     print('Creating Dataset...')
-    rds = data.RawDataset(args.dataset_path, output_dims=tuple(args.input_dims), output_channels=args.input_channels, num_workers=args.num_workers)
+    transformer = None
+    if args.transformer:
+        transformer = getattr(transform, args.transformer)()
+    rds = data.RawDataset(args.dataset_path, output_dims=tuple(args.input_dims),
+                          output_channels=args.input_channels, num_workers=args.num_workers,
+                          transformer=transformer)
 
     gain_args = {
         'gradient_layer_name': args.gradient_layer_name,
@@ -36,7 +43,9 @@ def train_handler(args):
         'alpha': args.alpha,
         'omega': args.omega,
         'sigma': args.sigma
+
     }
+
     if args.weights_file:
         print('Loading Saved Model from %s...'%args.weights_file)
         if args.input_dims:
@@ -93,7 +102,11 @@ def infer_handler(args):
     image = image.expand(label_onehot.size()[0], -1, -1, -1)
 
     print('Generating heatmap...')
+    start_time = time.time()
     output_cl, loss_cl, A_c, heatmap_img = model.generate_heatmap(image, label_onehot)
+    time_diff = time.time() - start_time
+
+    print('Inference took %f s'%time_diff)
 
     if not args.output_dir:
         # display the heatmap
@@ -188,6 +201,8 @@ def parse_args(argv):
         help='The dimensions to resize inputs to. Keep in mind that some models have a default input size. This is not used if the model is loaded from saved weights.')
     train_parser.add_argument('--input-channels', type=int,
         help='The number of channels the network should expect as input. This is not used if the model is loaded from saved weights.')
+    train_parser.add_argument('--transformer', type=str, choices=transform.available_transformers,
+        help='The transformer to use on training data')
 
     infer_parser = subparser.add_parser('infer', parents=[gpu_parent, model_parent],
         help='Run inference on a trained model')
