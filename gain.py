@@ -11,7 +11,7 @@ import json
 import math
 
 model_file_reg = re.compile(r'saved_model_(?P<epoch>\d+)_(?P<tag>[a-zA-Z0-9-_]+)\.model')
-available_models = [i for i in dir(torchvision.models) if not i.startswith('__')]
+available_models = [i for i in dir(torchvision.models) if not i.startswith('_')]
 
 def scalar(tensor):
     return tensor.data.cpu().numpy()[0]
@@ -152,18 +152,6 @@ class AttentionGAIN:
 
         return ret_str
 
-    # def _to_one_hot(self, in_tensor):
-        # # utility function for turning list of integers to one_hot encoded arrays
-        # in_tensor = in_tensor.view(1,-1)
-        # one_hot = torch.zeros(in_tensor.size()[0], len(self.labels))
-        # print(in_tensor)
-        # if self.gpu:
-            # one_hot = one_hot.cuda()
-
-        # one_hot = one_hot.scatter_(0, in_tensor, 1.0)
-
-        # return one_hot
-
     def _convert_data_and_label(self, data, label):
         # converts our data and label over to variables, gpu optional
         if self.gpu:
@@ -171,7 +159,6 @@ class AttentionGAIN:
             label = label.cuda()
 
         data = torch.autograd.Variable(data)
-        # label_one_hot = self._to_one_hot(label)
         label = torch.autograd.Variable(label)
 
         return data, label
@@ -436,7 +423,8 @@ class AttentionGAIN:
         output_cl_softmax = F.softmax(output_cl, dim=1)
 
         # Eq 4
-        T_A_c = torch.sigmoid(self.omega * (A_c - self.sigma))
+        T_A_c = torch.sigmoid(self.omega * (A_c - A_c.mean(dim=2, keepdim=True).mean(dim=1, keepdim=True)))
+        # T_A_c = torch.sigmoid(self.omega * (A_c - self.sigma))
 
         # Eq 3
         I_star = data - (T_A_c * data)
