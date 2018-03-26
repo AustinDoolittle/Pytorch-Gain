@@ -6,6 +6,8 @@ import argparse
 import sys
 import gain
 import data
+import torch
+import cv2
 
 def set_available_gpus(gpus):
     if isinstance(gpus, list):
@@ -59,13 +61,50 @@ def train_handler(args):
     print('Starting Training')
     print('=================\n')
     model.train(rds, args.num_epochs, pretrain_epochs=args.pretrain_epochs,
-                pretrain_threshold=args.pretrain_threshold, test_every_n_epochs=args.test_every_n,
-                learning_rate=args.learning_rate)
+                pretrain_threshold=args.pretrain_threshold, test_every_n_epochs=args.test_every_n_epochs,
+                learning_rate=args.learning_rate, num_heatmaps=args.heatmaps_per_test,
+                heatmap_all_labels=args.heatmap_all_labels)
     print('\nTraining Complete')
     print('=================')
 
 def infer_handler(args):
-    raise NotImplementedError('Coming soon...')
+    if not args.weights_file:
+        raise argparse.ArgumentError('You must specify a weights file when running inference on a file')
+
+    print('Loading model...')
+    model = gain.AttentionGAIN.load(args.weights_file, gradient_layer_name=args.gradient_layer_name)
+
+    print('Loading data...')
+    # load the image file
+    image = data.load_image(args.image_path, model.input_dims, model.input_channels)
+    image = torch.FloatTensor(image)
+
+    # construct data
+    if args.heatmap_label:
+        if not args.label in model.labels:
+            raise argparse.ArgumentError('Label %s not included in model\'s available labels %s'%(args.label, model.labels))
+
+        label_index = model.labels.index(args.label)
+        label_onehot = torch.zeros(1, len(model.labels))
+        label_onehot[0, label_index] = 1
+    else:
+        label_onehot = torch.eye(len(model.labels))
+
+    image = image.expand(label_onehot.size()[0], -1, -1, -1)
+
+    print('Generating heatmap...')
+    output_cl, loss_cl, A_c, heatmap_img = model.generate_heatmap(image, label_onehot)
+
+    if not args.output_dir:
+        # display the heatmap
+        cv2.imshow('heatmap', heatmap_img)
+        cv2.waitKey(0)
+    else:
+        if not os.path.exists(args.output_dir):
+            os.makedirs(args.output_dir)
+        out_name = datatime.now().strftime('%Y%m%d_%H%M%S')
+        out_name += '_heatmap.png'
+        cv2.imwrite(out_name, heatmap_img)
 
 def model_info_handler(args):
     if args.weights_file:
@@ -92,6 +131,8 @@ def model_info_handler(args):
             print('Gradient layer %s does not exist in this model'%args.gradient_layer_name)
 
 def parse_args(argv):
+    heatmap_parent = argparse.ArgumentParser(add_help=False)
+
     gpu_parent = argparse.ArgumentParser(add_help=False)
     gpu_parent.add_argument('--gpus', type=str, nargs='+',
         help='GPUs to run training on. Exclude for cpu training')
@@ -119,11 +160,11 @@ def parse_args(argv):
     train_parser.set_defaults(func=train_handler)
     train_parser.add_argument('--learning-rate', type=float, default=0.0005,
         help='Learning rate to plug into the optimizer')
-    train_parser.add_argument('--test-every-n', type=int, default=5,
+    train_parser.add_argument('--test-every-n-epochs', type=int, default=5,
         help='Run a full iteration over the test epoch every n epochs')
-    train_parser.add_argument('--heatmaps-per-test', type=int, default=0,
+    train_parser.add_argument('--heatmaps-per-test', type=int, default=1,
         help='The number of heatmaps to create for each test')
-    train_parser.add_argument('--heatmaps-all-labels', action='store_true',
+    train_parser.add_argument('--heatmap-all-labels', action='store_true',
         help='Create a heatmap for each label and concatenate them together')
 
     train_parser.add_argument('--alpha', type=float, default=1,
@@ -153,12 +194,10 @@ def parse_args(argv):
     infer_parser.set_defaults(func=infer_handler)
     infer_parser.add_argument('--image-path', type=str, required=True,
         help='The path to the image that you would like to classify')
-    infer_parser.add_argument('--label', type=str,
+    infer_parser.add_argument('--heatmap-label', type=str,
         help='If this is set, a heatmap is only generated for this label. Otherwise, a heatmap is generated for all labels')
     infer_parser.add_argument('--output-dir', type=str,
         help='The directory to save heatmap outputs')
-    infer_parser.add_argument('-c', '--concat-output', action='store_true',
-        help='If this flag is specified, the output heatmaps are concatenated to one image')
 
     model_info_parser = subparser.add_parser('model', parents=[model_parent],
         help='Utility to print information about a model for easier layer selection')

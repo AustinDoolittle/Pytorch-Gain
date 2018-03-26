@@ -6,13 +6,16 @@ import random
 
 def load_image(image_path, resize_dims, expected_channels):
     # decode and resize
-    decoded_img = cv2.imread(self._fileset[idx][0])
-    decoded_img = cv2.resize(decoded_img, self.output_dims)
+    decoded_img = cv2.imread(image_path, -1)
+    if decoded_img is None:
+        raise IOError('There was an error reading image %s'%image_path)
+
+    decoded_img = cv2.resize(decoded_img, resize_dims)
     # convert to expected channel count
-    if decoded_img.shape[2] == 1 and self.output_channels == 3:
+    if decoded_img.shape[2] == 1 and expected_channels == 3:
         decoded_img = cv2.cvtColor(decoded_img, cv2.COLOR_GRAY2RGB)
 
-    elif decoded_img.shape[2] == 3 and self.output_channels == 1:
+    elif decoded_img.shape[2] == 3 and expected_channels == 1:
         decoded_img = cv2.cvtColor(decoded_img, cv2.COLOR_RGB2GRAY)
         decoded_img = np.expand_dims(decoded_img, axis=2)
 
@@ -20,6 +23,7 @@ def load_image(image_path, resize_dims, expected_channels):
     decoded_img = decoded_img.transpose((2, 0, 1))
     decoded_img = decoded_img.astype(np.float32)
     decoded_img = decoded_img / 255.0
+    return decoded_img
 
 
 class RawDataset:
@@ -47,9 +51,10 @@ class RawDataset:
 
             p_split = p.rsplit('___', 1)
             p = p_split[0]
-            p_tag = p_split[1]
-            if p_tag == 'ignore':
-                continue
+            if len(p_split) > 1:
+                p_tag = p_split[1]
+                if p_tag == 'ignore':
+                    continue
 
             for f in os.listdir(full_dir):
                 if os.path.splitext(f)[1] in self.include_exts:
@@ -96,12 +101,27 @@ class ImageDataset(torch.utils.data.Dataset):
         return len(self._fileset)
 
     def __getitem__(self, idx):
-        decoded_img = read_image(self._fileset[idx][0], self.output_dims, self.output_channels)
-        label_index = self.labels.index(self._fileset[idx][1])
+        decoded_img = None
+        label = None
+        while decoded_img is None:
+            try:
+                decoded_img = load_image(self._fileset[idx][0], self.output_dims, self.output_channels)
+                label = self._fileset[idx][1]
+            except IOError as e:
+                print('WARNING error reading file at index %i, returning random data instance: %s'%(idx, str(e)))
+                idx = random.randint(0, len(self._fileset) - 1)
+
+        label_index = self.labels.index(label)
+
+        # NOTE I'd much prefer this be done in actual model
+        # using pytorch, but they don't have great onehot support
+        one_hot = np.zeros((len(self.labels),), dtype=np.float32)
+        one_hot[label_index] = 1
 
         ret_dict = {
             'image': decoded_img,
             'label/idx': label_index,
+            'label/onehot': one_hot,
             'label/name': self._fileset[idx][1]
         }
 

@@ -8,6 +8,7 @@ import cv2
 import re
 import io
 import json
+import math
 
 model_file_reg = re.compile(r'saved_model_(?P<epoch>\d+)_(?P<tag>[a-zA-Z0-9-_]+)\.model')
 available_models = [i for i in dir(torchvision.models) if not i.startswith('__')]
@@ -18,6 +19,31 @@ def scalar(tensor):
 def get_model(model_type, output_length):
     model = getattr(torchvision.models, model_type)
     return model(pretrained=False, num_classes=output_length)
+
+def tile_images(images, num_wide=5):
+    # dummy check
+    if len(images) == 1:
+        return images[0]
+
+    shape = images[0].shape
+    num_high = math.ceil(len(images) / float(num_wide))
+    num_high = int(num_high)
+
+    if len(images) < num_wide:
+        num_wide = len(images)
+
+    output_img = np.zeros((num_high * shape[0], num_wide * shape[1], shape[2]), dtype=np.uint8)
+    for i in range(len(images)):
+        curr_image = images[i]
+        if curr_image.shape != shape:
+            print('WARNING image shape is not consistent, images are all resized to %s'%str(shape))
+            curr_image = cv2.resize(curr_image, shape[:2])
+
+        y = i % num_wide * shape[0]
+        x = int(i / num_wide) * shape[1]
+        output_img[x:x + shape[0], y:y + shape[1], :] = curr_image
+    return output_img
+
 
 class AttentionGAIN:
     def __init__(self, model_type=None, gradient_layer_name=None, weights=None, heatmap_dir=None,
@@ -47,6 +73,9 @@ class AttentionGAIN:
 
         if self.gpu:
             self.model = self.model.cuda()
+            self.tensor_source = torch.cuda
+        else:
+            self.tensor_source = torch
 
         # wire up our hooks for heatmap creation
         self._register_hooks(gradient_layer_name)
@@ -123,17 +152,17 @@ class AttentionGAIN:
 
         return ret_str
 
-    def _to_one_hot(self, in_tensor):
-        # utility function for turning list of integers to one_hot encoded arrays
-        in_tensor = in_tensor.view(1,-1)
-        one_hot = torch.zeros(in_tensor.size()[0], len(self.labels))
+    # def _to_one_hot(self, in_tensor):
+        # # utility function for turning list of integers to one_hot encoded arrays
+        # in_tensor = in_tensor.view(1,-1)
+        # one_hot = torch.zeros(in_tensor.size()[0], len(self.labels))
+        # print(in_tensor)
+        # if self.gpu:
+            # one_hot = one_hot.cuda()
 
-        if self.gpu:
-            one_hot = one_hot.cuda()
+        # one_hot = one_hot.scatter_(0, in_tensor, 1.0)
 
-        one_hot = one_hot.scatter_(1, in_tensor, 1.0)
-
-        return one_hot
+        # return one_hot
 
     def _convert_data_and_label(self, data, label):
         # converts our data and label over to variables, gpu optional
@@ -142,10 +171,10 @@ class AttentionGAIN:
             label = label.cuda()
 
         data = torch.autograd.Variable(data)
-        label_one_hot = self._to_one_hot(label)
-        label_one_hot = torch.autograd.Variable(label_one_hot)
+        # label_one_hot = self._to_one_hot(label)
+        label = torch.autograd.Variable(label)
 
-        return data, label_one_hot
+        return data, label
 
     def _get_meta_dict(self):
         ret_dict = {
@@ -219,10 +248,36 @@ class AttentionGAIN:
             except OSError as e:
                 print('WARNING there was an error while trying to remove file %s: %s'% (delete_model_path, e))
 
-    def _maybe_save_heatmap(self, image, heatmap, epoch):
+    def _maybe_save_heatmap(self, images, labels, heatmaps, epoch, heatmap_nbr):
         if self.heatmap_dir is None:
             return
 
+        heatmap_image = self._combine_heatmaps(images, labels, heatmaps)
+
+        # write it to a file
+        if not os.path.exists(self.heatmap_dir):
+            os.makedirs(self.heatmap_dir)
+
+        out_file = os.path.join(self.heatmap_dir, 'epoch_%i_%i.png'%(epoch, heatmap_nbr))
+        cv2.imwrite(out_file, heatmap_image)
+
+        print('HEATMAP saved to %s'%out_file)
+
+    def _combine_heatmaps(self, data, labels, A_c):
+        heatmaps = []
+        if len(labels.size()) == 2:
+            labels = labels.max(dim=1)[1]
+
+        labels = labels.cpu().numpy()
+
+        for i in range(data.shape[0]):
+            heatmaps.append(self._combine_heatmap_with_image(data[i], A_c[i], self.labels[labels[i]]))
+
+        out_heatmap = tile_images(heatmaps)
+        return out_heatmap
+
+    @staticmethod
+    def _combine_heatmap_with_image(image, heatmap, label_name):
         # get the min and max values once to be used with scaling
         min_val = heatmap.min()
         max_val = heatmap.max()
@@ -243,18 +298,26 @@ class AttentionGAIN:
         # generate the heatmap
         heatmap_image = cv2.addWeighted(scaled_image, 0.7, heatmap, 0.3, 0)
 
-        # write it to a file
-        if not os.path.exists(self.heatmap_dir):
-            os.makedirs(self.heatmap_dir)
+        # superimpose label_name
+        img_height = heatmap_image.shape[0]
+        heatmap_image = cv2.putText(heatmap_image, label_name,
+                                    (10, img_height - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX,
+                                    1.0,
+                                    (255, 255, 255),
+                                    1,
+                                    cv2.LINE_AA)
+        return heatmap_image
 
-        out_file = os.path.join(self.heatmap_dir, 'epoch_%i.png'%epoch)
-        cv2.imwrite(os.path.join(self.heatmap_dir, 'epoch_%i.png'%epoch), heatmap_image)
-        print('HEATMAP saved to %s'%out_file)
+    def generate_heatmap(self, data, label, width=3):
+        data_var, label_var = self._convert_data_and_label(data, label)
+        output_cl, loss_cl, A_c = self._attention_map_forward(data_var, label_var)
+        heatmap = self._combine_heatmaps(data, label, A_c)
+        return output_cl, loss_cl, A_c, heatmap
 
     def forward(self, data, label):
-        data, label_one_hot = self._convert_data_and_label(data, label)
-
-        return self._forward(data, label_one_hot)
+        data, label = self._convert_data_and_label(data, label)
+        return self._forward(data, label)
 
     def _check_dataset_compatability(self, rds):
         if rds.output_dims != self.input_dims:
@@ -267,7 +330,7 @@ class AttentionGAIN:
             raise ValueError('Dataset has labels %s, model has labels %s'%
                                 (str(rds.labels), str(self.labels)))
 
-    def train(self, rds, epochs, pretrain_epochs=10, learning_rate=1e-5, pretrain_threshold=0.95, test_every_n_epochs=5):
+    def train(self, rds, epochs, pretrain_epochs=10, learning_rate=1e-5, pretrain_threshold=0.95, test_every_n_epochs=5, num_heatmaps=1, heatmap_all_labels=False):
         # TODO dynamic optimizer selection
         self._check_dataset_compatability(rds)
 
@@ -287,7 +350,7 @@ class AttentionGAIN:
             total_loss_sum = 0
             # train
             for sample in rds.datasets['train']:
-                total_loss, loss_cl, loss_am, acc_cl, A_c = self.forward(sample['image'], sample['label/idx'])
+                total_loss, loss_cl, loss_am, probs, acc_cl, A_c = self.forward(sample['image'], sample['label/onehot'])
                 total_loss_sum += scalar(total_loss)
                 loss_cl_sum += scalar(loss_cl)
                 loss_am_sum += scalar(loss_am)
@@ -315,9 +378,24 @@ class AttentionGAIN:
                 loss_am_sum = 0
                 acc_cl_sum = 0
                 total_loss_sum = 0
+                heatmap_count = 0
                 for sample in rds.datasets['test']:
+                    data = sample['image']
+                    label_onehot = sample['label/onehot']
+                    label = sample['label/idx']
+                    save_heatmap = heatmap_count < num_heatmaps
+
+                    if save_heatmap and heatmap_all_labels:
+                        label_onehot = torch.eye(len(self.labels))
+                        label = torch.arange(0, len(self.labels), out=torch.LongTensor())
+                        data = data.expand(len(self.labels), -1, -1, -1)
+
                     # test
-                    total_loss, loss_cl, loss_am, acc_cl, A_c = self.forward(sample['image'], sample['label/idx'])
+                    total_loss, loss_cl, loss_am, prob, acc_cl, A_c = self.forward(data, label_onehot)
+
+                    if save_heatmap:
+                        self._maybe_save_heatmap(data, label, A_c, i+1, heatmap_count)
+                        heatmap_count += 1
 
                     total_loss_sum += scalar(total_loss)
                     loss_cl_sum += scalar(loss_cl)
@@ -330,56 +408,52 @@ class AttentionGAIN:
                     (loss_cl_sum / test_size, loss_am_sum / test_size, total_loss_sum / test_size, avg_acc * 100.0))
 
                 if avg_acc > max_acc:
-                    self._maybe_save_model(i+1)
+                    self._maybe_save_model()
                     max_acc = avg_acc
 
-                self._maybe_save_heatmap(sample['image'][0], A_c[0], i+1)
-
-    def _forward(self, data, label):
+    def _attention_map_forward(self, data, label):
         output_cl = self.model(data)
-        output_cl_softmax = F.softmax(output_cl, dim=1)
-
-        output_cl.backward(gradient=label * output_cl_softmax)
+        output_cl.backward(gradient=label * output_cl)
 
         self.model.zero_grad()
 
         # Eq 1
         w_c = self._last_grad.mean(dim=(1), keepdim=True)
 
+        # paper calls this convolution, I think it's easier to think of it as a sum of products
         # Eq 2
         A_c = self._last_activation * w_c
         A_c = A_c.sum(dim=(1), keepdim=True)
         A_c = F.relu(A_c)
+        A_c = F.upsample(A_c, size=data.size()[2:], mode='bilinear')
+
+        loss_cl = self.loss_cl(output_cl, label)
+
+        return output_cl, loss_cl, A_c
+
+    def _forward(self, data, label):
+        output_cl, loss_cl, A_c = self._attention_map_forward(data, label)
+        output_cl_softmax = F.softmax(output_cl, dim=1)
 
         # Eq 4
         T_A_c = torch.sigmoid(self.omega * (A_c - self.sigma))
 
-        # resize our maps to be the size of the input image
-        A_c_resized = F.upsample(A_c, size=data.size()[2:], mode='bilinear')
-        T_A_c_resized = F.upsample(T_A_c, size=data.size()[2:], mode='bilinear')
-
         # Eq 3
-        I_star = data - (T_A_c_resized * data)
+        I_star = data - (T_A_c * data)
 
         output_am = self.model(I_star)
 
         # Eq 5
         loss_am = F.softmax(output_am, dim=1) * label
 
-        tensor_module = torch
-        if self.gpu:
-            tensor_module = torch.cuda
-
-        loss_am = loss_am.sum() / label.sum().type(tensor_module.FloatTensor)
-
-        loss_cl = self.loss_cl(output_cl, label)
+        loss_am = loss_am.sum() / label.sum().type(self.tensor_source.FloatTensor)
 
         # Eq 6
         total_loss = loss_cl + self.alpha*loss_am
 
-        cl_acc = output_cl.max(dim=1)[1] == label.max(dim=1)[1]
-        cl_acc = cl_acc.type(tensor_module.FloatTensor).mean()
+        cl_acc = output_cl_softmax.max(dim=1)[1] == label.max(dim=1)[1]
+        cl_acc = cl_acc.type(self.tensor_source.FloatTensor).mean()
 
-        return total_loss, loss_cl, loss_am, cl_acc, A_c_resized
+        return total_loss, loss_cl, loss_am, output_cl_softmax, cl_acc, A_c
 
 
