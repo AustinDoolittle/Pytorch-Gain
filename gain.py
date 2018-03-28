@@ -405,12 +405,17 @@ class AttentionGAIN:
         self.model.zero_grad()
 
         # Eq 1
-        w_c = self._last_grad.mean(dim=(1), keepdim=True)
+        w_c = self._last_grad.mean(dim=3, keepdim=True).mean(dim=2, keepdim=True)
 
-        # paper calls this convolution, I think it's easier to think of it as a sum of products
         # Eq 2
-        A_c = self._last_activation * w_c
-        A_c = A_c.sum(dim=(1), keepdim=True)
+        # TODO hack
+        last_act_size = self._last_activation.size()
+        A_c_size = (last_act_size[0], 1) + last_act_size[2:]
+        A_c = torch.zeros(A_c_size, out=self.tensor_source.FloatTensor())
+        A_c = torch.autograd.Variable(A_c, requires_grad=False)
+        for i in range(w_c.size()[0]):
+            A_c[i, :, :, :] = F.conv2d(self._last_activation[[i], :, :, :], w_c[[i], :, :, :])
+
         A_c = F.relu(A_c)
         A_c = F.upsample(A_c, size=data.size()[2:], mode='bilinear')
 
