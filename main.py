@@ -23,17 +23,24 @@ def train_handler(args):
         set_available_gpus(args.gpus)
 
     output_dir = os.path.join(args.output_dir,
-                                os.path.basename(args.dataset_path) + '_' + datetime.now().strftime('%Y%m%d_%H%M%S'))
+                                os.path.split(args.dataset_path)[-1] + '_' + datetime.now().strftime('%Y%m%d_%H%M%S'))
     heatmap_dir = os.path.join(output_dir, 'heatmaps')
     model_dir = os.path.join(output_dir, 'models')
 
     print('Creating Dataset...')
+    batch_size_dict = None
+    if args.batch_size:
+        batch_size_dict = {
+            'train': args.batch_size,
+            'test': 1
+        }
+
     transformer = None
     if args.transformer:
         transformer = getattr(transform, args.transformer)()
     rds = data.RawDataset(args.dataset_path, output_dims=tuple(args.input_dims),
                           output_channels=args.input_channels, num_workers=args.num_workers,
-                          transformer=transformer)
+                          transformer=transformer, batch_size_dict=batch_size_dict)
 
     gain_args = {
         'gradient_layer_name': args.gradient_layer_name,
@@ -43,7 +50,6 @@ def train_handler(args):
         'alpha': args.alpha,
         'omega': args.omega,
         'sigma': args.sigma
-
     }
 
     if args.weights_file:
