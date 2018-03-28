@@ -11,7 +11,7 @@ def load_image(image_path, resize_dims, expected_channels):
         raise IOError('There was an error reading image %s'%image_path)
 
     decoded_img = cv2.resize(decoded_img, resize_dims)
-    if len(decoded_img.shape):
+    if len(decoded_img.shape) == 2:
         decoded_img = np.expand_dims(decoded_img, axis=2)
     # convert to expected channel count
     if decoded_img.shape[2] == 1 and expected_channels == 3:
