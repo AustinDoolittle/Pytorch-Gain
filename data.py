@@ -23,13 +23,12 @@ def load_image(image_path, resize_dims, expected_channels):
 
     # pytorch is [C, H, W]
     decoded_img = decoded_img.transpose((2, 0, 1))
-    decoded_img = decoded_img.astype(np.float32)
-    decoded_img = decoded_img / 255.0
+    decoded_img = decoded_img.astype(np.float32) / 255.0
     return decoded_img
 
 
 class RawDataset:
-    def __init__(self, root_dir, ds_split=0.8, include_exts=['.jpg', '.png', '.jpeg'], transformer=None, output_dims=(224, 224), output_channels=3, num_workers=1):
+    def __init__(self, root_dir, ds_split=0.8, include_exts=['.jpg', '.png', '.jpeg'], transformer=None, output_dims=(224, 224), output_channels=3, num_workers=1, batch_size_dict=None):
         self.name = os.path.split(root_dir)[-1]
         self._ds_split = ds_split
         self.root_dir = root_dir
@@ -37,6 +36,12 @@ class RawDataset:
         self.include_exts = include_exts
         self.output_dims = output_dims
         self.num_workers = num_workers
+        if not batch_size_dict:
+            batch_size_dict = {
+                'train': 1,
+                'test': 1
+            }
+        self.batch_size_dict = batch_size_dict
 
         # TODO implement transformers
         self.transformer = transformer
@@ -63,7 +68,7 @@ class RawDataset:
                     if not p in image_dict:
                         image_dict[p] = []
 
-                    image_dict[p].append(os.path.join(self.root_dir, p, f))
+                    image_dict[p].append(os.path.join(full_dir, f))
         self.labels = image_dict.keys()
 
         # split the train and test datasets equally among labels
@@ -86,7 +91,7 @@ class RawDataset:
                 ds_args['transformer'] = self.transformer
 
             ds = ImageDataset(filesets['train'], self.labels, **ds_args)
-            ret_dict[k] = torch.utils.data.DataLoader(ds, shuffle=True, num_workers=self.num_workers)
+            ret_dict[k] = torch.utils.data.DataLoader(ds, shuffle=True, num_workers=self.num_workers, batch_size=self.batch_size_dict[k])
 
         return ret_dict
 

@@ -400,7 +400,7 @@ class AttentionGAIN:
 
     def _attention_map_forward(self, data, label):
         output_cl = self.model(data)
-        output_cl.backward(gradient=label * output_cl)
+        output_cl.backward(gradient=label)
 
         self.model.zero_grad()
 
@@ -424,12 +424,13 @@ class AttentionGAIN:
         return output_cl, loss_cl, A_c
 
     def _forward(self, data, label):
+        # TODO normalize elsewhere, this feels wrong
         output_cl, loss_cl, A_c = self._attention_map_forward(data, label)
         output_cl_softmax = F.softmax(output_cl, dim=1)
 
         # Eq 4
-        T_A_c = torch.sigmoid(self.omega * (A_c - A_c.mean(dim=2, keepdim=True).mean(dim=1, keepdim=True)))
-        # T_A_c = torch.sigmoid(self.omega * (A_c - self.sigma))
+        # T_A_c = torch.sigmoid(self.omega * (A_c - A_c.mean(dim=2, keepdim=True).mean(dim=1, keepdim=True)))
+        T_A_c = torch.sigmoid(self.omega * (A_c - self.sigma))
 
         # Eq 3
         I_star = data - (T_A_c * data)
@@ -437,8 +438,7 @@ class AttentionGAIN:
         output_am = self.model(I_star)
 
         # Eq 5
-        loss_am = F.softmax(output_am, dim=1) * label
-
+        loss_am = F.sigmoid(output_am) * label
         loss_am = loss_am.sum() / label.sum().type(self.tensor_source.FloatTensor)
 
         # Eq 6
