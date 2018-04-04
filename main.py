@@ -106,7 +106,7 @@ def infer_handler(args):
     if not args.output_dir:
         # display the heatmap
         cv2.imshow('heatmap', heatmap_img)
-        cv2.waitKey(0)
+        cv2.waitKey(1000)
     else:
         if not os.path.exists(args.output_dir):
             os.makedirs(args.output_dir)

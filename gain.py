@@ -255,7 +255,7 @@ class AttentionGAIN:
 
 
     @staticmethod
-    def _combine_heatmap_with_image(image, heatmap, label_name, font_scale=0.75, font_name=cv2.FONT_HERSHEY_COMPLEX,
+    def _combine_heatmap_with_image(image, heatmap, label_name, font_scale=0.75, font_name=cv2.FONT_HERSHEY_SIMPLEX,
                                     font_color=(255,255,255), font_pixel_width=1):
         # get the min and max values once to be used with scaling
         min_val = heatmap.min()
@@ -278,9 +278,9 @@ class AttentionGAIN:
 
         # superimpose label_name
         img_height = heatmap_image.shape[0]
-        text_size, baseline = cv2.getTextSize(label_name, font_name, font_scale, font_pixel_width)
+        (text_size_w, text_size_h), baseline = cv2.getTextSize(label_name, font_name, font_scale, font_pixel_width)
         heatmap_image = cv2.putText(heatmap_image, label_name,
-                                    (10, text_size + baseline + 10),
+                                    (10, text_size_h + baseline + 10),
                                     font_name,
                                     font_scale,
                                     font_color,

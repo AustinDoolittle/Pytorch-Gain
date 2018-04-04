@@ -29,7 +29,7 @@ def load_image(image_path, resize_dims, expected_channels):
 
 class RawDataset:
     def __init__(self, root_dir, ds_split=0.8, include_exts=['.jpg', '.png', '.jpeg'], transformer=None, output_dims=(224, 224), output_channels=3, num_workers=1, batch_size_dict=None):
-        self.name = os.path.split(root_dir)[-1]
+        self.name = os.path.basename(os.path.normpath(root_dir))
         self._ds_split = ds_split
         self.root_dir = root_dir
         self.output_channels = output_channels
