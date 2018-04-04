@@ -77,8 +77,7 @@ def train_handler(args):
     print('=================\n')
     model.train(rds, args.num_epochs, pretrain_epochs=args.pretrain_epochs,
                 pretrain_threshold=args.pretrain_threshold, test_every_n_epochs=args.test_every_n_epochs,
-                learning_rate=args.learning_rate, num_heatmaps=args.heatmaps_per_test,
-                heatmap_all_labels=args.heatmap_all_labels)
+                learning_rate=args.learning_rate, num_heatmaps=args.heatmaps_per_test)
     print('\nTraining Complete')
     print('=================')
 
@@ -95,15 +94,12 @@ def infer_handler(args):
     image = torch.FloatTensor(image)
 
     # construct data
-    if args.heatmap_label:
-        if not args.label in model.labels:
-            raise argparse.ArgumentError('Label %s not included in model\'s available labels %s'%(args.label, model.labels))
+    if not args.heatmap_label in model.labels:
+        raise argparse.ArgumentError('Label %s not included in model\'s available labels %s'%(args.label, model.labels))
 
-        label_index = model.labels.index(args.label)
-        label_onehot = torch.zeros(1, len(model.labels))
-        label_onehot[0, label_index] = 1
-    else:
-        label_onehot = torch.eye(len(model.labels))
+    label_index = model.labels.index(args.heatmap_label)
+    label_onehot = torch.zeros(1, len(model.labels))
+    label_onehot[0, label_index] = 1
 
     image = image.expand(label_onehot.size()[0], -1, -1, -1)
 
@@ -117,7 +113,7 @@ def infer_handler(args):
     if not args.output_dir:
         # display the heatmap
         cv2.imshow('heatmap', heatmap_img)
-        cv2.waitKey(0)
+        cv2.waitKey(1000)
     else:
         if not os.path.exists(args.output_dir):
             os.makedirs(args.output_dir)
@@ -150,8 +146,6 @@ def model_info_handler(args):
             print('Gradient layer %s does not exist in this model'%args.gradient_layer_name)
 
 def parse_args(argv):
-    heatmap_parent = argparse.ArgumentParser(add_help=False)
-
     gpu_parent = argparse.ArgumentParser(add_help=False)
     gpu_parent.add_argument('--gpus', type=str, nargs='+',
         help='GPUs to run training on. Exclude for cpu training')
@@ -183,14 +177,12 @@ def parse_args(argv):
         help='Run a full iteration over the test epoch every n epochs')
     train_parser.add_argument('--heatmaps-per-test', type=int, default=1,
         help='The number of heatmaps to create for each test')
-    train_parser.add_argument('--heatmap-all-labels', action='store_true',
-        help='Create a heatmap for each label and concatenate them together')
 
     train_parser.add_argument('--alpha', type=float, default=1,
         help='The coefficied in Eq 6 that weights the attention mining loss in relation to the classification loss')
-    train_parser.add_argument('--sigma', type=float, default=0.5,
+    train_parser.add_argument('--sigma', type=float, default=1e-5,
         help='The threshold value used in Eq 6')
-    train_parser.add_argument('--omega', type=float, default=10,
+    train_parser.add_argument('--omega', type=float, default=1e5,
         help='The scaling value used in Eq 6')
     train_parser.add_argument('--pretrain-epochs', type=int, default=100,
         help='The number of epochs to train the network before factoring in the attention map')
@@ -215,7 +207,7 @@ def parse_args(argv):
     infer_parser.set_defaults(func=infer_handler)
     infer_parser.add_argument('--image-path', type=str, required=True,
         help='The path to the image that you would like to classify')
-    infer_parser.add_argument('--heatmap-label', type=str,
+    infer_parser.add_argument('--heatmap-label', type=str, required=True,
         help='If this is set, a heatmap is only generated for this label. Otherwise, a heatmap is generated for all labels')
     infer_parser.add_argument('--output-dir', type=str,
         help='The directory to save heatmap outputs')

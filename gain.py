@@ -235,42 +235,33 @@ class AttentionGAIN:
             except OSError as e:
                 print('WARNING there was an error while trying to remove file %s: %s'% (delete_model_path, e))
 
-    def _maybe_save_heatmap(self, images, labels, heatmaps, epoch, heatmap_nbr):
+    def _maybe_save_heatmap(self, image, label, heatmap, I_star, epoch, heatmap_nbr):
         if self.heatmap_dir is None:
             return
 
-        heatmap_image = self._combine_heatmaps(images, labels, heatmaps)
+        heatmap_image = self._combine_heatmap_with_image(image, heatmap, self.labels[label])
+
+        I_star = I_star.data.cpu().numpy().transpose((1,2,0)) * 255.0
+        out_image = tile_images([heatmap_image, I_star])
 
         # write it to a file
         if not os.path.exists(self.heatmap_dir):
             os.makedirs(self.heatmap_dir)
 
         out_file = os.path.join(self.heatmap_dir, 'epoch_%i_%i.png'%(epoch, heatmap_nbr))
-        cv2.imwrite(out_file, heatmap_image)
+        cv2.imwrite(out_file, out_image)
 
         print('HEATMAP saved to %s'%out_file)
 
-    def _combine_heatmaps(self, data, labels, A_c):
-        heatmaps = []
-        if len(labels.size()) == 2:
-            labels = labels.max(dim=1)[1]
-
-        labels = labels.cpu().numpy()
-
-        for i in range(data.shape[0]):
-            heatmaps.append(self._combine_heatmap_with_image(data[i], A_c[i], self.labels[labels[i]]))
-
-        out_heatmap = tile_images(heatmaps)
-        return out_heatmap
 
     @staticmethod
-    def _combine_heatmap_with_image(image, heatmap, label_name):
+    def _combine_heatmap_with_image(image, heatmap, label_name, font_scale=0.75, font_name=cv2.FONT_HERSHEY_SIMPLEX,
+                                    font_color=(255,255,255), font_pixel_width=1):
         # get the min and max values once to be used with scaling
         min_val = heatmap.min()
         max_val = heatmap.max()
 
         # Scale the heatmap in range 0-255
-        # CAUTION: gross
         heatmap = (255 * (heatmap - min_val)) / (max_val - min_val + 1e-5)
         heatmap = heatmap.data.cpu().numpy().astype(np.uint8).transpose((1,2,0))
         heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
@@ -287,19 +278,20 @@ class AttentionGAIN:
 
         # superimpose label_name
         img_height = heatmap_image.shape[0]
+        (text_size_w, text_size_h), baseline = cv2.getTextSize(label_name, font_name, font_scale, font_pixel_width)
         heatmap_image = cv2.putText(heatmap_image, label_name,
-                                    (10, img_height - 10),
-                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                    1.0,
-                                    (255, 255, 255),
-                                    1,
-                                    cv2.LINE_AA)
+                                    (10, text_size_h + baseline + 10),
+                                    font_name,
+                                    font_scale,
+                                    font_color,
+                                    thickness=font_pixel_width)
         return heatmap_image
 
     def generate_heatmap(self, data, label, width=3):
         data_var, label_var = self._convert_data_and_label(data, label)
+        label_name = self.labels[int(label.max())]
         output_cl, loss_cl, A_c = self._attention_map_forward(data_var, label_var)
-        heatmap = self._combine_heatmaps(data, label, A_c)
+        heatmap = self._combine_heatmap_with_image(data[0], A_c[0], label_name)
         return output_cl, loss_cl, A_c, heatmap
 
     def forward(self, data, label):
@@ -317,7 +309,7 @@ class AttentionGAIN:
             raise ValueError('Dataset has labels %s, model has labels %s'%
                                 (str(rds.labels), str(self.labels)))
 
-    def train(self, rds, epochs, pretrain_epochs=10, learning_rate=1e-5, pretrain_threshold=0.95, test_every_n_epochs=5, num_heatmaps=1, heatmap_all_labels=False):
+    def train(self, rds, epochs, pretrain_epochs=10, learning_rate=1e-5, pretrain_threshold=0.95, test_every_n_epochs=5, num_heatmaps=1):
         # TODO dynamic optimizer selection
         self._check_dataset_compatability(rds)
 
@@ -337,7 +329,7 @@ class AttentionGAIN:
             total_loss_sum = 0
             # train
             for sample in rds.datasets['train']:
-                total_loss, loss_cl, loss_am, probs, acc_cl, A_c = self.forward(sample['image'], sample['label/onehot'])
+                total_loss, loss_cl, loss_am, probs, acc_cl, A_c, _ = self.forward(sample['image'], sample['label/onehot'])
                 total_loss_sum += scalar(total_loss)
                 loss_cl_sum += scalar(loss_cl)
                 loss_am_sum += scalar(loss_am)
@@ -370,18 +362,12 @@ class AttentionGAIN:
                     data = sample['image']
                     label_onehot = sample['label/onehot']
                     label = sample['label/idx']
-                    save_heatmap = heatmap_count < num_heatmaps
-
-                    if save_heatmap and heatmap_all_labels:
-                        label_onehot = torch.eye(len(self.labels))
-                        label = torch.arange(0, len(self.labels), out=torch.LongTensor())
-                        data = data.expand(len(self.labels), -1, -1, -1)
 
                     # test
-                    total_loss, loss_cl, loss_am, prob, acc_cl, A_c = self.forward(data, label_onehot)
+                    total_loss, loss_cl, loss_am, prob, acc_cl, A_c, I_star = self.forward(data, label_onehot)
 
-                    if save_heatmap:
-                        self._maybe_save_heatmap(data, label, A_c, i+1, heatmap_count)
+                    if heatmap_count < num_heatmaps:
+                        self._maybe_save_heatmap(data[0], label[0], A_c[0], I_star[0], i+1, heatmap_count)
                         heatmap_count += 1
 
                     total_loss_sum += scalar(total_loss)
@@ -400,7 +386,7 @@ class AttentionGAIN:
 
     def _attention_map_forward(self, data, label):
         output_cl = self.model(data)
-        output_cl.backward(gradient=label)
+        output_cl.backward(gradient=torch.sigmoid(output_cl) * label)
 
         self.model.zero_grad()
 
@@ -408,13 +394,8 @@ class AttentionGAIN:
         w_c = self._last_grad.mean(dim=3, keepdim=True).mean(dim=2, keepdim=True)
 
         # Eq 2
-        # TODO hack
-        last_act_size = self._last_activation.size()
-        A_c_size = (last_act_size[0], 1) + last_act_size[2:]
-        A_c = torch.zeros(A_c_size, out=self.tensor_source.FloatTensor())
-        A_c = torch.autograd.Variable(A_c, requires_grad=False)
-        for i in range(w_c.size()[0]):
-            A_c[i, :, :, :] = F.conv2d(self._last_activation[[i], :, :, :], w_c[[i], :, :, :])
+        # TODO this doesn't support batching
+        A_c = F.conv2d(self._last_activation, w_c)
 
         A_c = F.relu(A_c)
         A_c = F.upsample(A_c, size=data.size()[2:], mode='bilinear')
@@ -429,7 +410,6 @@ class AttentionGAIN:
         output_cl_softmax = F.softmax(output_cl, dim=1)
 
         # Eq 4
-        # T_A_c = torch.sigmoid(self.omega * (A_c - A_c.mean(dim=2, keepdim=True).mean(dim=1, keepdim=True)))
         T_A_c = torch.sigmoid(self.omega * (A_c - self.sigma))
 
         # Eq 3
@@ -447,6 +427,6 @@ class AttentionGAIN:
         cl_acc = output_cl_softmax.max(dim=1)[1] == label.max(dim=1)[1]
         cl_acc = cl_acc.type(self.tensor_source.FloatTensor).mean()
 
-        return total_loss, loss_cl, loss_am, output_cl_softmax, cl_acc, A_c
+        return total_loss, loss_cl, loss_am, output_cl_softmax, cl_acc, A_c, I_star
 
 
