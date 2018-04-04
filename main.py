@@ -180,9 +180,9 @@ def parse_args(argv):
 
     train_parser.add_argument('--alpha', type=float, default=1,
         help='The coefficied in Eq 6 that weights the attention mining loss in relation to the classification loss')
-    train_parser.add_argument('--sigma', type=float, default=1e-5,
+    train_parser.add_argument('--sigma', type=float, default=1e-3,
         help='The threshold value used in Eq 6')
-    train_parser.add_argument('--omega', type=float, default=1e5,
+    train_parser.add_argument('--omega', type=float, default=100,
         help='The scaling value used in Eq 6')
     train_parser.add_argument('--pretrain-epochs', type=int, default=100,
         help='The number of epochs to train the network before factoring in the attention map')
