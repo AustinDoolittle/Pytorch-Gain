@@ -410,7 +410,8 @@ class AttentionGAIN:
         output_cl_softmax = F.softmax(output_cl, dim=1)
 
         # Eq 4
-        T_A_c = torch.sigmoid(self.omega * (A_c - self.sigma))
+        # TODO this currently doesn't support batching, maybe add that
+        T_A_c = torch.sigmoid(self.omega * (A_c - (self.sigma * torch.max(A_c)[0])))
 
         # Eq 3
         I_star = data - (T_A_c * data)
