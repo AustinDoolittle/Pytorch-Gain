@@ -2,7 +2,7 @@ import imgaug as ia
 import imgaug.augmenters as iaa
 import numpy as np
 
-available_transformers = ['Dropout', 'Affine', 'DropoutAndAffine']
+available_transformers = ['Dropout', 'Affine', 'DropoutAndAffine', 'Translate']
 
 
 class TransformerBase:
@@ -32,6 +32,16 @@ class DropoutAndAffine(TransformerBase):
            dropout_xform.augmenter],
            random_order=True)
         return aug
+
+
+class Translate(TransformerBase):
+    def _build_augmenter(self, **kwargs):
+        aug = iaa.SomeOf((0, None), [
+            iaa.Affine(translate_percent=(0, 0.1)),
+            iaa.CropAndPad(percent=(-1e-5, -0.1), keep_size=True, sample_independently=True)],
+            random_order=True)
+        return aug
+
 
 class Affine(TransformerBase):
     def _build_augmenter(self, **kwargs):
