@@ -3,22 +3,17 @@ import torch.nn.functional as F
 from datetime import datetime
 import numpy as np
 import os
-import torchvision
 import cv2
 import re
 import io
 import json
 import math
+import models
 
 model_file_reg = re.compile(r'saved_model_(?P<epoch>\d+)_(?P<tag>[a-zA-Z0-9-_]+)\.model')
-available_models = [i for i in dir(torchvision.models) if not i.startswith('_')]
 
 def scalar(tensor):
-    return tensor.data.cpu().numpy()[0]
-
-def get_model(model_type, output_length):
-    model = getattr(torchvision.models, model_type)
-    return model(pretrained=False, num_classes=output_length)
+    return tensor.data.cpu().item()
 
 def tile_images(images, num_wide=5):
     # dummy check
@@ -38,7 +33,8 @@ def tile_images(images, num_wide=5):
         if curr_image.shape != shape:
             print('WARNING image shape is not consistent, images are all resized to %s'%str(shape))
             curr_image = cv2.resize(curr_image, shape[:2])
-
+        if len(curr_image.shape) == 2:
+            curr_image = np.expand_dims(curr_image, 2)
         y = i % num_wide * shape[0]
         x = int(i / num_wide) * shape[1]
         output_img[x:x + shape[0], y:y + shape[1], :] = curr_image
@@ -48,7 +44,7 @@ def tile_images(images, num_wide=5):
 class AttentionGAIN:
     def __init__(self, model_type=None, gradient_layer_name=None, weights=None, heatmap_dir=None,
                  saved_model_dir=None, epoch=0, gpu=False, alpha=1, omega=10, sigma=0.5, labels=None,
-                 input_channels=None, input_dims=None):
+                 input_channels=None, input_dims=None, batch_norm=True):
         # validation
         if not model_type:
             raise ValueError('Missing required argument model_type')
@@ -64,7 +60,7 @@ class AttentionGAIN:
 
         # define model
         self.model_type = model_type
-        self.model = get_model(self.model_type, len(labels))
+        self.model = models.get_model(self.model_type, len(labels), batch_norm=batch_norm, num_channels=input_channels)
         if weights:
             self.model.load_state_dict(weights)
             self.epoch = epoch
@@ -144,11 +140,8 @@ class AttentionGAIN:
             ret_str += '\n\t%s: %s'%(str(k), str(v))
         ret_str += '\n'
 
-        ret_str += 'Layers:'
-        for idx, m in self.model.named_modules():
-            if not '.' in str(idx):
-                continue
-            ret_str += '\n%s: %s'%(str(idx), str(m))
+        ret_str += 'Layers:\n'
+        models.model_to_str(self.model)
 
         return ret_str
 
@@ -173,7 +166,7 @@ class AttentionGAIN:
             }
         return ret_dict
 
-    def _maybe_save_model(self, tag='default', save_count=1):
+    def _maybe_save_model(self, serialization, tag='default', save_count=1):
         # TODO if a different save count but same tag is used in different circumstances, this will have
         # undefined behavior (we only delete one file if there are too many, but we should be trimming to *save_count*
         if self.saved_model_dir is None:
@@ -185,13 +178,17 @@ class AttentionGAIN:
             except OSError as e:
                 print('WARNING there was an error while creating directory %s: %s'%(str(self.saved_model_dir), str(e)))
                 return
+        if serialization == 'onnx':
+            extension = '.onnx'
+        else:
+            extension = '.pyt'
 
         max_epoch = self.epoch
         delete_model_path = None
         num_models = 0
         # store the model for later deletion
         for p in os.listdir(self.saved_model_dir):
-            if not os.path.splitext(p)[-1] == '.model':
+            if not os.path.splitext(p)[-1] == extension:
                 continue
 
             try:
@@ -214,26 +211,37 @@ class AttentionGAIN:
             delete_model_path = None
 
         # save the current model
-        saved_model_filename = os.path.join(self.saved_model_dir, 'saved_model_%i_%s.model'%(self.epoch, tag))
-
-        save_dict = {
-            'state_dict': self.model.state_dict(),
-            'meta': self._get_meta_dict()
-        }
-
-        try:
-            torch.save(save_dict, saved_model_filename)
-            print('MODEL saved to %s'%saved_model_filename)
-        except OSError as e:
-            print('WARNING there was an error while saving model: %s'%str(e))
-            return
-
-        # delete our extra model
-        if delete_model_path:
+        saved_model_filename = os.path.join(self.saved_model_dir, 'saved_model_%i_%s%s'%(self.epoch, tag, extension))
+        if serialization == 'onnx':
+            dummy_dims = (1, self.input_channels) + self.input_dims
+            dummy_input = torch.autograd.Variable(torch.randn(dummy_dims))
+            if self.gpu:
+                dummy_input = dummy_input.cuda()
             try:
-                os.remove(delete_model_path)
+                torch.onnx.export(self.model, dummy_input, saved_model_filename)
+                print('MODEL saved to %s'%saved_model_filename)
             except OSError as e:
-                print('WARNING there was an error while trying to remove file %s: %s'% (delete_model_path, e))
+                print('WARNING there was an error while saving model: %s'%str(e))
+
+        else:
+            save_dict = {
+                'state_dict': self.model.state_dict(),
+                'meta': self._get_meta_dict()
+            }
+
+            try:
+                torch.save(save_dict, saved_model_filename)
+                print('MODEL saved to %s'%saved_model_filename)
+            except OSError as e:
+                print('WARNING there was an error while saving model: %s'%str(e))
+                return
+
+            # delete our extra model
+            if delete_model_path:
+                try:
+                    os.remove(delete_model_path)
+                except OSError as e:
+                    print('WARNING there was an error while trying to remove file %s: %s'% (delete_model_path, e))
 
     def _maybe_save_heatmap(self, image, label, heatmap, I_star, epoch, heatmap_nbr):
         if self.heatmap_dir is None:
@@ -252,7 +260,6 @@ class AttentionGAIN:
         cv2.imwrite(out_file, out_image)
 
         print('HEATMAP saved to %s'%out_file)
-
 
     @staticmethod
     def _combine_heatmap_with_image(image, heatmap, label_name, font_scale=0.75, font_name=cv2.FONT_HERSHEY_SIMPLEX,
@@ -309,14 +316,13 @@ class AttentionGAIN:
             raise ValueError('Dataset has labels %s, model has labels %s'%
                                 (str(rds.labels), str(self.labels)))
 
-    def train(self, rds, epochs, pretrain_epochs=10, learning_rate=1e-5, pretrain_threshold=0.95, test_every_n_epochs=5, num_heatmaps=1):
+    def train(self, rds, epochs, serialization_format, pretrain_epochs=10, learning_rate=1e-5, pretrain_threshold=0.95, test_every_n_epochs=5, num_heatmaps=1):
         # TODO dynamic optimizer selection
         self._check_dataset_compatability(rds)
 
         last_acc = 0
         max_acc = 0
         pretrain_finished = False
-
         opt = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
         for i in range(self.epoch, epochs, 1):
             self.epoch = i
@@ -366,37 +372,35 @@ class AttentionGAIN:
                     # test
                     total_loss, loss_cl, loss_am, prob, acc_cl, A_c, I_star = self.forward(data, label_onehot)
 
-                    if heatmap_count < num_heatmaps:
-                        self._maybe_save_heatmap(data[0], label[0], A_c[0], I_star[0], i+1, heatmap_count)
-                        heatmap_count += 1
-
                     total_loss_sum += scalar(total_loss)
                     loss_cl_sum += scalar(loss_cl)
                     loss_am_sum += scalar(loss_am)
                     acc_cl_sum += scalar(acc_cl)
+
+                    if heatmap_count < num_heatmaps:
+                        self._maybe_save_heatmap(data[0], label[0], A_c[0], I_star[0], i+1, heatmap_count)
+                        heatmap_count += 1
 
                 test_size = len(rds.datasets['test'])
                 avg_acc = acc_cl_sum / test_size
                 print('TEST Loss_CL: %f, Loss_AM: %f, Loss_Total: %f, Accuracy_CL: %f%%'%
                     (loss_cl_sum / test_size, loss_am_sum / test_size, total_loss_sum / test_size, avg_acc * 100.0))
 
-                if avg_acc > max_acc:
-                    self._maybe_save_model()
-                    max_acc = avg_acc
-
     def _attention_map_forward(self, data, label):
         output_cl = self.model(data)
-        output_cl.backward(gradient=torch.sigmoid(output_cl) * label)
+        grad_target = (output_cl * label).sum()
+        grad_target.backward(gradient=label * output_cl, retain_graph=True)
 
         self.model.zero_grad()
 
         # Eq 1
+        w_c = F.adaptive_avg_pool2d(self._last_grad, 1)
         w_c = self._last_grad.mean(dim=3, keepdim=True).mean(dim=2, keepdim=True)
 
         # Eq 2
         # TODO this doesn't support batching
-        A_c = F.conv2d(self._last_activation, w_c)
-
+        A_c = self._last_activation * w_c
+        A_c = A_c.mean(dim=1, keepdim=True)
         A_c = F.relu(A_c)
         A_c = F.upsample(A_c, size=data.size()[2:], mode='bilinear')
 
@@ -411,7 +415,7 @@ class AttentionGAIN:
 
         # Eq 4
         # TODO this currently doesn't support batching, maybe add that
-        T_A_c = torch.sigmoid(self.omega * (A_c - (self.sigma * torch.max(A_c)[0])))
+        T_A_c = torch.sigmoid(self.omega * (A_c - (self.sigma * torch.max(A_c))))
 
         # Eq 3
         I_star = data - (T_A_c * data)

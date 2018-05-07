@@ -4,27 +4,49 @@ import os
 import torch
 import random
 
+def write_image(path, image):
+    dirname = os.path.dirname(path)
+    if not os.path.exists(dirname):
+        os.makedirs(dirname)
+
+    cv2.imwrite(path, image)
+
 def load_image(image_path, resize_dims, expected_channels):
     # decode and resize
-    decoded_img = cv2.imread(image_path, -1)
-    if decoded_img is None:
+    image = cv2.imread(image_path, -1)
+    if image is None:
         raise IOError('There was an error reading image %s'%image_path)
 
-    decoded_img = cv2.resize(decoded_img, resize_dims)
-    if len(decoded_img.shape) == 2:
-        decoded_img = np.expand_dims(decoded_img, axis=2)
-    # convert to expected channel count
-    if decoded_img.shape[2] == 1 and expected_channels == 3:
-        decoded_img = cv2.cvtColor(decoded_img, cv2.COLOR_GRAY2RGB)
+    image = cv2.resize(image, resize_dims)
+    return cv_to_mx(image, expected_channels)
 
-    elif decoded_img.shape[2] == 3 and expected_channels == 1:
-        decoded_img = cv2.cvtColor(decoded_img, cv2.COLOR_RGB2GRAY)
-        decoded_img = np.expand_dims(decoded_img, axis=2)
+def scale_to_range(arr, min_range, max_range):
+    min_val = arr.min()
+    max_val = arr.max()
+    return ((max_range-min_range) * (arr - min_val)) / (max_val - min_val + 1e-5) + min_range
+
+def mx_to_cv(image):
+    image = scale_to_range(image, 0, 255)
+    image = image.transpose((1, 2, 0)).astype(np.uint8)
+    return image
+
+
+def cv_to_mx(image, expected_channels):
+    if len(image.shape) == 2:
+        image = np.expand_dims(image , axis=2)
+    # convert to expected channel count
+    if image.shape[2] == 1 and expected_channels == 3:
+        image = cv2.cvtColor(image , cv2.COLOR_GRAY2RGB)
+
+    elif image.shape[2] == 3 and expected_channels == 1:
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        image = np.expand_dims(image, axis=2)
 
     # pytorch is [C, H, W]
-    decoded_img = decoded_img.transpose((2, 0, 1))
-    decoded_img = decoded_img.astype(np.float32) / 255.0
-    return decoded_img
+    image = image.transpose((2, 0, 1))
+    image = image.astype(np.float32)
+    image = scale_to_range(image, 0.0, 1.0)
+    return image
 
 
 class RawDataset:
@@ -90,7 +112,7 @@ class RawDataset:
             if k == 'train':
                 ds_args['transformer'] = self.transformer
 
-            ds = ImageDataset(filesets['train'], self.labels, **ds_args)
+            ds = ImageDataset(filesets[k], self.labels, **ds_args)
             ret_dict[k] = torch.utils.data.DataLoader(ds, shuffle=True, num_workers=self.num_workers, batch_size=self.batch_size_dict[k])
 
         return ret_dict

@@ -10,6 +10,7 @@ import transform
 import torch
 import cv2
 import time
+import models
 
 def set_available_gpus(gpus):
     if isinstance(gpus, list):
@@ -22,10 +23,6 @@ def train_handler(args):
     if args.gpus:
         set_available_gpus(args.gpus)
 
-    output_dir = os.path.join(args.output_dir,
-                                os.path.split(args.dataset_path)[-1] + '_' + datetime.now().strftime('%Y%m%d_%H%M%S'))
-    heatmap_dir = os.path.join(output_dir, 'heatmaps')
-    model_dir = os.path.join(output_dir, 'models')
 
     print('Creating Dataset...')
     batch_size_dict = None
@@ -42,6 +39,10 @@ def train_handler(args):
                           output_channels=args.input_channels, num_workers=args.num_workers,
                           transformer=transformer, batch_size_dict=batch_size_dict)
 
+    output_dir = os.path.join(args.output_dir,
+                                rds.name + '_' + datetime.now().strftime('%Y%m%d_%H%M%S'))
+    heatmap_dir = os.path.join(output_dir, 'heatmaps')
+    model_dir = os.path.join(output_dir, 'models')
     gain_args = {
         'gradient_layer_name': args.gradient_layer_name,
         'gpu': bool(args.gpus),
@@ -49,7 +50,8 @@ def train_handler(args):
         'saved_model_dir': model_dir,
         'alpha': args.alpha,
         'omega': args.omega,
-        'sigma': args.sigma
+        'sigma': args.sigma,
+        'batch_norm': not args.no_batch_norm,
     }
 
     if args.weights_file:
@@ -75,7 +77,7 @@ def train_handler(args):
 
     print('Starting Training')
     print('=================\n')
-    model.train(rds, args.num_epochs, pretrain_epochs=args.pretrain_epochs,
+    model.train(rds, args.num_epochs, args.serialization_format, pretrain_epochs=args.pretrain_epochs,
                 pretrain_threshold=args.pretrain_threshold, test_every_n_epochs=args.test_every_n_epochs,
                 learning_rate=args.learning_rate, num_heatmaps=args.heatmaps_per_test)
     print('\nTraining Complete')
@@ -86,7 +88,7 @@ def infer_handler(args):
         raise argparse.ArgumentError('You must specify a weights file when running inference on a file')
 
     print('Loading model...')
-    model = gain.AttentionGAIN.load(args.weights_file, gradient_layer_name=args.gradient_layer_name)
+    model = gain.AttentionGAIN.load(args.weights_file, gradient_layer_name=args.gradient_layer_name, batch_norm=not args.no_batch_norm)
 
     print('Loading data...')
     # load the image file
@@ -123,27 +125,18 @@ def infer_handler(args):
 
 def model_info_handler(args):
     if args.weights_file:
+        print('Loading model with weights...')
         # load the meta data too
-        model = gain.AttentionGAIN.load(args.weights_file, gradient_layer_name=args.gradient_layer_name)
+        model = gain.AttentionGAIN.load(args.weights_file, gradient_layer_name=args.gradient_layer_name, batch_norm=args.batch_norm)
         print(model)
     else:
-        model = gain.get_model(args.model_type, 1)
+        print('Loading model...')
+        model = models.get_model(args.model_type, 1, batch_norm=not args.no_batch_norm)
 
         # print every layer in the model
         print('%s Model Layers:'%args.model_type)
-        gradient_layer_found = False
-        for idx, m in model.named_modules():
-            if not '.' in str(idx):
-                continue
-            print('%s: %s'%(str(idx), str(m)))
-            if idx == args.gradient_layer_name:
-                gradient_layer_found = True
+        print(models.model_to_str(model))
 
-        print('\n')
-        if gradient_layer_found:
-            print('Gradient layer %s exists in this model'%args.gradient_layer_name)
-        else:
-            print('Gradient layer %s does not exist in this model'%args.gradient_layer_name)
 
 def parse_args(argv):
     gpu_parent = argparse.ArgumentParser(add_help=False)
@@ -159,10 +152,12 @@ def parse_args(argv):
     model_parent = argparse.ArgumentParser(add_help=False)
     model_parent.add_argument('--gradient-layer-name', type=str, default='features.34',
         help='The name of the layer to construct the heatmap from')
-    model_parent.add_argument('--model-type', type=str, default='vgg19', choices=gain.available_models,
+    model_parent.add_argument('--model-type', type=str, default='vgg19', choices=models.available_models,
         help='The name of the underlying model to train')
     model_parent.add_argument('--weights-file', type=str,
         help='The full path to the .tar file containing model weights and metadata')
+    model_parent.add_argument('--no-batch-norm', action='store_true',
+        help='Use batch norm in the custom defined models')
 
     parser = argparse.ArgumentParser(description='Implementation of GAIN using pytorch')
 
@@ -201,6 +196,8 @@ def parse_args(argv):
         help='The number of channels the network should expect as input. This is not used if the model is loaded from saved weights.')
     train_parser.add_argument('--transformer', type=str, choices=transform.available_transformers,
         help='The transformer to use on training data')
+    train_parser.add_argument('--serialization-format', type=str, choices=['pytorch', 'onnx'], default='pytorch',
+        help='The serialization format to use when saving model checkpoints')
 
     infer_parser = subparser.add_parser('infer', parents=[gpu_parent, model_parent],
         help='Run inference on a trained model')
