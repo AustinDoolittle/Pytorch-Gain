@@ -101,7 +101,6 @@ class AttentionGAIN:
     @staticmethod
     def load(model_path, **kwargs):
         model_dict= torch.load(model_path)
-        kwargs.update(model_dict['meta'])
         return AttentionGAIN(weights=model_dict['state_dict'], **kwargs)
 
     @staticmethod
@@ -156,16 +155,6 @@ class AttentionGAIN:
 
         return data, label
 
-    def _get_meta_dict(self):
-        ret_dict = {
-                'input_dims': self.input_dims,
-                'input_channels': self.input_channels,
-                'model_type': self.model_type,
-                'labels': self.labels,
-                'epoch': self.epoch
-            }
-        return ret_dict
-
     def _maybe_save_model(self, serialization, tag='default', save_count=1):
         # TODO if a different save count but same tag is used in different circumstances, this will have
         # undefined behavior (we only delete one file if there are too many, but we should be trimming to *save_count*
@@ -201,7 +190,7 @@ class AttentionGAIN:
 
             temp_epoch = int(temp_epoch)
             num_models += 1
-            full_model_path = os.path.join(self.saved_model_dir, p)
+
             if temp_epoch < max_epoch:
                 delete_model_path = os.path.join(self.saved_model_dir, p)
                 max_epoch = temp_epoch
@@ -224,13 +213,8 @@ class AttentionGAIN:
                 print('WARNING there was an error while saving model: %s'%str(e))
 
         else:
-            save_dict = {
-                'state_dict': self.model.state_dict(),
-                'meta': self._get_meta_dict()
-            }
-
             try:
-                torch.save(save_dict, saved_model_filename)
+                torch.save(self.model.state_dict(), saved_model_filename)
                 print('MODEL saved to %s'%saved_model_filename)
             except OSError as e:
                 print('WARNING there was an error while saving model: %s'%str(e))
@@ -262,8 +246,9 @@ class AttentionGAIN:
         print('HEATMAP saved to %s'%out_file)
 
     @staticmethod
-    def _combine_heatmap_with_image(image, heatmap, label_name, font_scale=0.75, font_name=cv2.FONT_HERSHEY_SIMPLEX,
-                                    font_color=(255,255,255), font_pixel_width=1):
+    def _combine_heatmap_with_image(image, heatmap, label_name, font_scale=0.75, 
+                                    font_name=cv2.FONT_HERSHEY_SIMPLEX, font_color=(255,255,255), 
+                                    font_pixel_width=1):
         # get the min and max values once to be used with scaling
         min_val = heatmap.min()
         max_val = heatmap.max()
@@ -284,8 +269,7 @@ class AttentionGAIN:
         heatmap_image = cv2.addWeighted(scaled_image, 0.7, heatmap, 0.3, 0)
 
         # superimpose label_name
-        img_height = heatmap_image.shape[0]
-        (text_size_w, text_size_h), baseline = cv2.getTextSize(label_name, font_name, font_scale, font_pixel_width)
+        (_, text_size_h), baseline = cv2.getTextSize(label_name, font_name, font_scale, font_pixel_width)
         heatmap_image = cv2.putText(heatmap_image, label_name,
                                     (10, text_size_h + baseline + 10),
                                     font_name,
@@ -316,7 +300,8 @@ class AttentionGAIN:
             raise ValueError('Dataset has labels %s, model has labels %s'%
                                 (str(rds.labels), str(self.labels)))
 
-    def train(self, rds, epochs, serialization_format, pretrain_epochs=10, learning_rate=1e-5, pretrain_threshold=0.95, test_every_n_epochs=5, num_heatmaps=1):
+    def train(self, rds, epochs, serialization_format, pretrain_epochs=10, learning_rate=1e-5,  
+                test_every_n_epochs=5, num_heatmaps=1):
         # TODO dynamic optimizer selection
         self._check_dataset_compatability(rds)
 
@@ -327,8 +312,7 @@ class AttentionGAIN:
         for i in range(self.epoch, epochs, 1):
             self.epoch = i
             pretrain_finished = pretrain_finished or \
-                                i > pretrain_epochs or \
-                                last_acc >= pretrain_threshold
+                                i > pretrain_epochs
             loss_cl_sum = 0
             loss_am_sum = 0
             acc_cl_sum = 0
@@ -394,31 +378,40 @@ class AttentionGAIN:
         self.model.zero_grad()
 
         # Eq 1
-        w_c = F.adaptive_avg_pool2d(self._last_grad, 1)
-        w_c = self._last_grad.mean(dim=3, keepdim=True).mean(dim=2, keepdim=True)
+        grad = self._last_grad
+        w_c = F.avg_pool2d(self._last_grad, (self._last_grad.shape[-2], self._last_grad.shape[-1]), 1)
+        w_c_new_shape = (w_c.shape[0] * w_c.shape[1], w_c.shape[2], w_c.shape[3])
+        w_c = w_c.view(w_c_new_shape).unsqueeze(0)
 
         # Eq 2
         # TODO this doesn't support batching
-        A_c = self._last_activation * w_c
-        A_c = A_c.mean(dim=1, keepdim=True)
-        A_c = F.relu(A_c)
-        A_c = F.upsample(A_c, size=data.size()[2:], mode='bilinear')
+        weights = self._last_activation
+        weights_new_shape = (weights.shape[0] * weights.shape[1], weights.shape[2], weights.shape[3])
+        weights = weights.view(weights_new_shape).unsqueeze(0)
+
+        gcam = F.relu(F.conv2d(weights, w_c))
+        A_c = F.upsample(gcam, size=data.size()[2:], mode='bilinear')
 
         loss_cl = self.loss_cl(output_cl, label)
 
         return output_cl, loss_cl, A_c
 
+    def _mask_image(self, gcam, image):
+        gcam_min = gcam.min()
+        gcam_max = gcam.max()
+        scaled_gcam = (gcam - gcam_min) / (gcam_max - gcam_min)
+        mask = F.sigmoid(self.omega * (scaled_gcam - self.sigma)).squeeze()
+        masked_image = image - (image * mask)
+        return masked_image
+
     def _forward(self, data, label):
         # TODO normalize elsewhere, this feels wrong
-        output_cl, loss_cl, A_c = self._attention_map_forward(data, label)
+        output_cl, loss_cl, gcam = self._attention_map_forward(data, label)
         output_cl_softmax = F.softmax(output_cl, dim=1)
 
         # Eq 4
         # TODO this currently doesn't support batching, maybe add that
-        T_A_c = torch.sigmoid(self.omega * (A_c - (self.sigma * torch.max(A_c))))
-
-        # Eq 3
-        I_star = data - (T_A_c * data)
+        I_star = self._mask_image(gcam, data)
 
         output_am = self.model(I_star)
 
@@ -432,6 +425,6 @@ class AttentionGAIN:
         cl_acc = output_cl_softmax.max(dim=1)[1] == label.max(dim=1)[1]
         cl_acc = cl_acc.type(self.tensor_source.FloatTensor).mean()
 
-        return total_loss, loss_cl, loss_am, output_cl_softmax, cl_acc, A_c, I_star
+        return total_loss, loss_cl, loss_am, output_cl_softmax, cl_acc, gcam, I_star
 
 

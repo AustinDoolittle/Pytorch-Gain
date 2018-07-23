@@ -91,7 +91,7 @@ class RawDataset:
                         image_dict[p] = []
 
                     image_dict[p].append(os.path.join(full_dir, f))
-        self.labels = image_dict.keys()
+        self.labels = list(image_dict.keys())
 
         # split the train and test datasets equally among labels
         filesets = {'test': [], 'train': []}

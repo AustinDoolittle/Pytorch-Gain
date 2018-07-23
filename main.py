@@ -23,7 +23,6 @@ def train_handler(args):
     if args.gpus:
         set_available_gpus(args.gpus)
 
-
     print('Creating Dataset...')
     batch_size_dict = None
     if args.batch_size:
@@ -78,7 +77,7 @@ def train_handler(args):
     print('Starting Training')
     print('=================\n')
     model.train(rds, args.num_epochs, args.serialization_format, pretrain_epochs=args.pretrain_epochs,
-                pretrain_threshold=args.pretrain_threshold, test_every_n_epochs=args.test_every_n_epochs,
+                test_every_n_epochs=args.test_every_n_epochs,
                 learning_rate=args.learning_rate, num_heatmaps=args.heatmaps_per_test)
     print('\nTraining Complete')
     print('=================')
@@ -137,7 +136,6 @@ def model_info_handler(args):
         print('%s Model Layers:'%args.model_type)
         print(models.model_to_str(model))
 
-
 def parse_args(argv):
     gpu_parent = argparse.ArgumentParser(add_help=False)
     gpu_parent.add_argument('--gpus', type=str, nargs='+',
@@ -150,9 +148,9 @@ def parse_args(argv):
         help='The number of worker processes to use for loading/transforming data. Note that this spawns this amount of workers for both the test and train dataset.')
 
     model_parent = argparse.ArgumentParser(add_help=False)
-    model_parent.add_argument('--gradient-layer-name', type=str, default='features.34',
+    model_parent.add_argument('--gradient-layer-name', type=str, required=True,
         help='The name of the layer to construct the heatmap from')
-    model_parent.add_argument('--model-type', type=str, default='vgg19', choices=models.available_models,
+    model_parent.add_argument('--model-type', type=str, required=True, choices=models.available_models,
         help='The name of the underlying model to train')
     model_parent.add_argument('--weights-file', type=str,
         help='The full path to the .tar file containing model weights and metadata')
@@ -181,8 +179,6 @@ def parse_args(argv):
         help='The scaling value used in Eq 6')
     train_parser.add_argument('--pretrain-epochs', type=int, default=100,
         help='The number of epochs to train the network before factoring in the attention map')
-    train_parser.add_argument('--pretrain-threshold', type=float, default=0.95,
-        help='The accuracy value to pretrain to before factoring in the attention map loss')
     train_parser.add_argument('--num-epochs', type=int, default=50,
         help='The number of epochs to run training for')
     train_parser.add_argument('--batch-size', type=int, default=1,
@@ -190,9 +186,9 @@ def parse_args(argv):
     train_parser.add_argument('--output-dir', type=str, default='./out',
         help='The output directory for training runs. A subdirectory with the modelname and timestamp is created')
     # TODO dynamically retrieve expected input size???
-    train_parser.add_argument('--input-dims', type=int, nargs=2,
+    train_parser.add_argument('--input-dims', type=int, nargs=2, required=True,
         help='The dimensions to resize inputs to. Keep in mind that some models have a default input size. This is not used if the model is loaded from saved weights.')
-    train_parser.add_argument('--input-channels', type=int,
+    train_parser.add_argument('--input-channels', type=int, required=True,
         help='The number of channels the network should expect as input. This is not used if the model is loaded from saved weights.')
     train_parser.add_argument('--transformer', type=str, choices=transform.available_transformers,
         help='The transformer to use on training data')
