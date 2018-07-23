@@ -1,0 +1,4 @@
+name: gain_win_env
+channels:
+  - defaults
+prefix: C:\tools\Anaconda3\envs\gain_win_env
